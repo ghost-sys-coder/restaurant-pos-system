@@ -2,6 +2,7 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import './lib/api.ts';
 import { ClerkProvider } from '@clerk/react';
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;

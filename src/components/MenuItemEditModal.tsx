@@ -16,8 +16,8 @@ export default function MenuItemEditModal({
   const [categoryId, setCategoryId] = useState<number>(
     item?.categoryId || categories[0]?.id || 1
   );
-  const [priceDollars, setPriceDollars] = useState<string>(
-    item ? (item.price / 100).toFixed(2) : '15.00'
+  const [priceUGX, setPriceUGX] = useState<string>(
+    item ? item.price.toString() : '25000'
   );
   const [description, setDescription] = useState<string>(item?.description || '');
   const [imageUrl, setImageUrl] = useState<string>(item?.imageUrl || '');
@@ -36,12 +36,12 @@ export default function MenuItemEditModal({
     if (!name.trim()) return;
 
     setIsSubmitting(true);
-    const priceCents = Math.round(parseFloat(priceDollars) * 100) || 1000;
+    const parsedPrice = Math.round(parseFloat(priceUGX)) || 25000;
 
     const payload = {
       name: name.trim(),
       categoryId,
-      price: priceCents,
+      price: parsedPrice,
       description: description.trim(),
       imageUrl: imageUrl.trim(),
       prepTimeMinutes,
@@ -60,7 +60,10 @@ export default function MenuItemEditModal({
         body: JSON.stringify(payload),
       });
 
-      if (!res.ok) throw new Error('Failed to save menu item');
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Failed to save menu item' }));
+        throw new Error(errorData.error || 'Failed to save menu item');
+      }
       showToast(`${name} ${item ? 'updated' : 'added to catalog'}`);
       await fetchData();
       onClose();
@@ -136,15 +139,15 @@ export default function MenuItemEditModal({
 
             <div>
               <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">
-                Price ($ USD)
+                Price (UGX)
               </label>
               <input
                 type="number"
-                step="0.01"
-                min="0.50"
+                step="500"
+                min="500"
                 id="input-dish-price"
-                value={priceDollars}
-                onChange={(e) => setPriceDollars(e.target.value)}
+                value={priceUGX}
+                onChange={(e) => setPriceUGX(e.target.value)}
                 className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-indigo-500 font-mono font-bold shadow-2xs"
               />
             </div>

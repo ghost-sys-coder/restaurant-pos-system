@@ -27,7 +27,10 @@ export default function AddTableModal() {
         }),
       });
 
-      if (!res.ok) throw new Error('Failed to create table');
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Failed to create table' }));
+        throw new Error(errorData.error || 'Failed to create table');
+      }
       showToast(`Table ${tableNumber} created successfully`);
       await fetchData();
       setAddTableModalOpen(false);

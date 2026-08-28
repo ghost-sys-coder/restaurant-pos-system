@@ -9,6 +9,8 @@ import {
   RestaurantTable,
 } from '../types.ts';
 import { playBeep, playKitchenChime, playSuccessChime } from '../utils/sound.ts';
+import { formatCurrency } from '../utils/formatters.ts';
+import { useAuth } from './AuthContext.tsx';
 
 export interface CartItem extends OrderItem {
   cartItemId: string;
@@ -86,9 +88,10 @@ interface PosContextType {
 
 const PosContext = createContext<PosContextType | undefined>(undefined);
 
-const TAX_RATE = 0.085; // 8.5%
+export const TAX_RATE = 0.0825; // 8.25% sales tax standard
 
 export function PosProvider({ children }: { children: ReactNode }) {
+  const { currentUser } = useAuth();
   const [activeView, setActiveView] = useState<ActiveView>('register');
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -148,6 +151,9 @@ export function PosProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     fetchData();
+  }, [currentUser]);
+
+  useEffect(() => {
     // Auto-poll orders for KDS and Table updates every 10 seconds
     const interval = setInterval(async () => {
       try {
@@ -292,7 +298,10 @@ export function PosProvider({ children }: { children: ReactNode }) {
         }),
       });
 
-      if (!res.ok) throw new Error('Order creation failed');
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Order creation failed' }));
+        throw new Error(errorData.error || 'Order creation failed');
+      }
       const createdOrder = await res.json();
       playKitchenChime();
       showToast(`Order ${createdOrder.orderNumber} sent to Kitchen & KDS!`);
@@ -352,7 +361,10 @@ export function PosProvider({ children }: { children: ReactNode }) {
           processedBy: 'Terminal Staff',
         }),
       });
-      if (!res.ok) throw new Error('Payment processing failed');
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Payment processing failed' }));
+        throw new Error(errorData.error || 'Payment processing failed');
+      }
       const updatedOrder = await res.json();
       playSuccessChime();
       showToast(`Payment of ${formatCurrency(amount)} processed successfully!`);
@@ -437,13 +449,6 @@ export function PosProvider({ children }: { children: ReactNode }) {
       {children}
     </PosContext.Provider>
   );
-}
-
-function formatCurrency(cents: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(cents / 100);
 }
 
 export function usePos() {

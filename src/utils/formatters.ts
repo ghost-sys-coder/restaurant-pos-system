@@ -1,11 +1,11 @@
-export function formatCurrency(cents: number | undefined | null): string {
-  if (cents === undefined || cents === null || isNaN(cents)) {
-    return '$0.00';
+export function formatCurrency(amount: number | undefined | null): string {
+  if (amount === undefined || amount === null || isNaN(amount)) {
+    return 'UGX 0';
   }
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-  }).format(cents / 100);
+  const formatted = new Intl.NumberFormat('en-UG', {
+    maximumFractionDigits: 0,
+  }).format(Math.round(amount));
+  return `UGX ${formatted}`;
 }
 
 export function formatDate(dateString: string | undefined | null): string {

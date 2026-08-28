@@ -193,9 +193,9 @@ export default function PaymentModal() {
                   <div className="grid grid-cols-4 gap-2">
                     {[
                       { label: 'Exact', amount: orderTotal },
-                      { label: '$20', amount: 2000 },
-                      { label: '$50', amount: 5000 },
-                      { label: '$100', amount: 10000 },
+                      { label: '50K', amount: 50000 },
+                      { label: '100K', amount: 100000 },
+                      { label: '200K', amount: 200000 },
                     ].map((btn) => (
                       <button
                         key={btn.label}

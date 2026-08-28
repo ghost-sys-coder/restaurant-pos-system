@@ -20,7 +20,7 @@ import {
   processPayment,
   getAnalyticsSummary,
 } from './src/db/queries.ts';
-import { getOrCreateUser, getAllUsers } from './src/db/users.ts';
+import { getOrCreateUser, getAllUsers, updateUserRole } from './src/db/users.ts';
 import { AuthRequest, requireAuth, requireRole } from './src/middleware/auth.ts';
 import { clerkMiddleware, clerkClient, getAuth } from '@clerk/express';
 
@@ -55,20 +55,47 @@ async function startServer() {
   app.post('/api/auth/sync', async (req: AuthRequest, res) => {
     try {
       const { userId } = getAuth(req);
+      console.log('[sync] userId from getAuth:', userId);
       if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+      console.log('[sync] fetching Clerk user for:', userId);
       const clerkUser = await clerkClient.users.getUser(userId);
+      console.log('[sync] Clerk user fetched:', clerkUser.id);
       const email = clerkUser.primaryEmailAddress?.emailAddress || `${userId}@clerk.local`;
       const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || clerkUser.username || email;
       const allowedRoles = ['admin', 'manager', 'cashier', 'waiter', 'kitchen'];
-      const requestedRole = clerkUser.publicMetadata.role;
-      const role = typeof requestedRole === 'string' && allowedRoles.includes(requestedRole) ? requestedRole : 'cashier';
-      const user = await getOrCreateUser(userId, email, name, role);
+      const rawRole = (clerkUser.publicMetadata?.role || clerkUser.unsafeMetadata?.role || clerkUser.privateMetadata?.role || 'cashier') as string;
+      const normalizedRole = typeof rawRole === 'string' ? rawRole.toLowerCase().trim() : 'cashier';
+      const defaultRole = allowedRoles.includes(normalizedRole) ? normalizedRole : 'cashier';
+
+      // Preserves existing database role if already stored in PostgreSQL
+      const user = await getOrCreateUser(userId, email, name, defaultRole);
+
+      // Keep Clerk publicMetadata synchronized with the database role
+      const dbRole = user.role;
+      const clerkRole = clerkUser.publicMetadata?.role;
+      if (dbRole && dbRole !== clerkRole) {
+        console.log(`[sync] Updating Clerk user ${userId} metadata role from '${clerkRole}' to DB role '${dbRole}'`);
+        try {
+          await clerkClient.users.updateUserMetadata(userId, {
+            publicMetadata: {
+              ...(typeof clerkUser.publicMetadata === 'object' && clerkUser.publicMetadata !== null ? clerkUser.publicMetadata : {}),
+              role: dbRole,
+            },
+          });
+        } catch (clerkErr) {
+          console.warn('[sync] Could not update Clerk user metadata:', clerkErr);
+        }
+      }
+
+      console.log('[sync] success:', user);
       res.json(user);
     } catch (error: any) {
-      console.error('Auth sync failed:', error);
-      res.status(500).json({ error: error.message || 'Auth sync failed' });
+      console.error('[sync] FAILED:', error);
+      const message = error?.cause?.message || error?.message || 'Auth sync failed';
+      res.status(500).json({ error: message });
     }
   });
+
 
   // Staff users
   app.get('/api/staff', async (req, res) => {
@@ -77,7 +104,46 @@ async function startServer() {
       res.json(users);
     } catch (error: any) {
       console.error('Failed to get staff:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to get staff';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // Update staff role
+  app.patch('/api/staff/:id/role', requireRole(['admin']), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { role } = req.body;
+      const allowedRoles = ['admin', 'manager', 'cashier', 'waiter', 'kitchen'];
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).json({ error: 'Invalid role' });
+      }
+
+      const updatedUser = await updateUserRole(id, role);
+      if (!updatedUser) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // Sync role back to Clerk metadata
+      if (updatedUser.clerkUserId) {
+        try {
+          const clerkUser = await clerkClient.users.getUser(updatedUser.clerkUserId);
+          await clerkClient.users.updateUserMetadata(updatedUser.clerkUserId, {
+            publicMetadata: {
+              ...(typeof clerkUser.publicMetadata === 'object' && clerkUser.publicMetadata !== null ? clerkUser.publicMetadata : {}),
+              role: updatedUser.role,
+            },
+          });
+        } catch (clerkErr) {
+          console.warn('Could not update Clerk metadata on role change:', clerkErr);
+        }
+      }
+
+      res.json(updatedUser);
+    } catch (error: any) {
+      console.error('Failed to update staff role:', error);
+      const message = error?.cause?.message || error?.message || 'Failed to update staff role';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -88,7 +154,8 @@ async function startServer() {
       res.json(categories);
     } catch (error: any) {
       console.error('Failed to fetch categories:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to fetch categories';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -99,7 +166,8 @@ async function startServer() {
       res.json(category);
     } catch (error: any) {
       console.error('Failed to create category:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to create category';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -111,7 +179,8 @@ async function startServer() {
       res.json(items);
     } catch (error: any) {
       console.error('Failed to fetch menu items:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to fetch menu items';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -121,7 +190,8 @@ async function startServer() {
       res.json(item);
     } catch (error: any) {
       console.error('Failed to create menu item:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to create menu item';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -132,7 +202,8 @@ async function startServer() {
       res.json(item);
     } catch (error: any) {
       console.error('Failed to update menu item:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to update menu item';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -143,7 +214,8 @@ async function startServer() {
       res.json(result);
     } catch (error: any) {
       console.error('Failed to delete menu item:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to delete menu item';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -154,7 +226,8 @@ async function startServer() {
       res.json(tables);
     } catch (error: any) {
       console.error('Failed to fetch tables:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to fetch tables';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -165,7 +238,8 @@ async function startServer() {
       res.json(table);
     } catch (error: any) {
       console.error('Failed to create table:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to create table';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -177,7 +251,8 @@ async function startServer() {
       res.json(table);
     } catch (error: any) {
       console.error('Failed to update table:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to update table';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -189,7 +264,8 @@ async function startServer() {
       res.json(ordersList);
     } catch (error: any) {
       console.error('Failed to fetch orders:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to fetch orders';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -203,7 +279,8 @@ async function startServer() {
       res.json(order);
     } catch (error: any) {
       console.error('Failed to get order:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to get order';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -213,7 +290,8 @@ async function startServer() {
       res.json(order);
     } catch (error: any) {
       console.error('Failed to create order:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to create order';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -225,7 +303,8 @@ async function startServer() {
       res.json(order);
     } catch (error: any) {
       console.error('Failed to update order status:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to update order status';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -237,7 +316,8 @@ async function startServer() {
       res.json(item);
     } catch (error: any) {
       console.error('Failed to update item status:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to update item status';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -255,7 +335,8 @@ async function startServer() {
       res.json(order);
     } catch (error: any) {
       console.error('Failed to process payment:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to process payment';
+      res.status(500).json({ error: message });
     }
   });
 
@@ -266,7 +347,8 @@ async function startServer() {
       res.json(analytics);
     } catch (error: any) {
       console.error('Failed to get analytics:', error);
-      res.status(500).json({ error: error.message });
+      const message = error?.cause?.message || error?.message || 'Failed to get analytics';
+      res.status(500).json({ error: message });
     }
   });
 
