@@ -1,0 +1,6 @@
+{
+  "name": "Restaurant POS System",
+  "description": "A comprehensive restaurant point of sale and order management system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
