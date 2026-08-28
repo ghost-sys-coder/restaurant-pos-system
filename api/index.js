@@ -4,9 +4,6 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// api/index.ts
-import "dotenv/config";
-
 // src/server/app.ts
 import "dotenv/config";
 import express from "express";
@@ -830,9 +827,8 @@ app.get("/api/analytics", async (req, res) => {
   }
 });
 var app_default = app;
-
-// api/index.ts
-var index_default = app_default;
 export {
-  index_default as default
+  clerkPublishableKey,
+  clerkSecretKey,
+  app_default as default
 };
