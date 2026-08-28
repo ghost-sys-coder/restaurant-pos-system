@@ -61,7 +61,7 @@ export default function PosRegisterView() {
         </div>
 
         {/* Menu Grid */}
-        <div className="flex-1 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-200 mt-4 lg:mt-0">
+        <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-200 mt-4 lg:mt-0">
           {filteredItems.length === 0 ? (
             <div className="h-64 flex flex-col items-center justify-center text-center text-slate-400 space-y-2">
               <Flame className="w-10 h-10 opacity-30 text-indigo-500" />
@@ -71,7 +71,7 @@ export default function PosRegisterView() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3 gap-3.5 pb-6">
               {filteredItems.map((item) => (
                 <MenuItemCard key={item.id} item={item} />
               ))}
@@ -91,8 +91,16 @@ export default function PosRegisterView() {
       </button>
 
       {/* Right: Live Cart / Order Ticket Panel */}
-      <div className={`fixed inset-x-0 bottom-0 z-40 bg-white lg:static lg:bg-transparent lg:z-auto lg:inset-auto transition-all duration-300 ${cartOpen ? 'block' : 'hidden lg:block'}`}>
-        <div className={`h-[60vh] lg:h-auto ${cartOpen ? 'animate-in slide-in-from-bottom duration-200' : ''}`}>
+      <div
+        className={`fixed inset-x-0 bottom-0 z-40 bg-white lg:static lg:bg-transparent lg:z-auto lg:h-full lg:flex lg:flex-col lg:min-h-0 transition-all duration-300 ${
+          cartOpen ? 'block' : 'hidden lg:flex'
+        }`}
+      >
+        <div
+          className={`h-[85vh] lg:h-full lg:flex lg:flex-col lg:min-h-0 ${
+            cartOpen ? 'animate-in slide-in-from-bottom duration-200' : ''
+          }`}
+        >
           <OrderCartPanel />
         </div>
       </div>

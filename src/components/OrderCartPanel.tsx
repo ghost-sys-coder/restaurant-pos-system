@@ -66,7 +66,7 @@ export default function OrderCartPanel() {
   return (
     <div
       id="pos-order-cart-panel"
-      className="flex-1 min-h-0 lg:w-96 xl:w-[410px] bg-white border-l border-slate-200 flex flex-col shrink-0 text-slate-900"
+      className="w-full lg:w-96 xl:w-[410px] h-full bg-white border-l border-slate-200 flex flex-col min-h-0 text-slate-900 overflow-hidden"
     >
       {/* Header & Order Type Switcher */}
       <div className="p-4 border-b border-slate-200 bg-slate-50/50 space-y-3 shrink-0">
@@ -171,7 +171,7 @@ export default function OrderCartPanel() {
       </div>
 
       {/* Cart Items List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-slate-200">
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-slate-200">
         {cartItems.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
             <ShoppingBag className="w-12 h-12 stroke-[1.2] mb-2 opacity-30 text-indigo-500" />

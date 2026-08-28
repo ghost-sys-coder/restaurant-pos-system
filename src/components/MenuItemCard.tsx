@@ -21,7 +21,7 @@ export default function MenuItemCard({ item }: { item: MenuItem }) {
     <div
       id={`menu-card-${item.id}`}
       onClick={handleCardClick}
-      className={`group relative bg-white border border-slate-200 hover:border-indigo-400 rounded-xl p-3.5 flex flex-col justify-between transition-all duration-200 shadow-xs hover:shadow-md text-slate-800 ${
+      className={`group relative bg-white border border-slate-200 hover:border-indigo-400 rounded-xl p-3.5 flex flex-col justify-between transition-all duration-200 shadow-xs hover:shadow-md text-slate-800 overflow-hidden ${
         item.isAvailable ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed bg-slate-50'
       }`}
     >
@@ -59,7 +59,7 @@ export default function MenuItemCard({ item }: { item: MenuItem }) {
           )}
 
           {/* Price Tag */}
-          <div className="absolute bottom-2 right-2 bg-white/95 backdrop-blur-xs px-2.5 py-1 rounded-lg text-indigo-600 font-extrabold text-sm border border-slate-200 shadow-xs font-mono">
+          <div className="absolute bottom-2 right-2 bg-white/95 backdrop-blur-xs px-2.5 py-1 rounded-lg text-indigo-600 font-extrabold text-xs sm:text-sm border border-slate-200 shadow-xs font-mono">
             {formatCurrency(item.price)}
           </div>
         </div>
@@ -76,12 +76,13 @@ export default function MenuItemCard({ item }: { item: MenuItem }) {
       </div>
 
       {/* Footer Info & Action */}
-      <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2 text-slate-500 text-[11px]">
-          {item.calories && <span>{item.calories} kcal</span>}
+      <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 text-xs">
+        <div className="min-w-0 flex-1 truncate text-slate-500 text-[11px]">
+          {item.calories ? `${item.calories} kcal` : ''}
+          {item.calories && item.allergens ? ' · ' : ''}
           {item.allergens && (
-            <span className="truncate max-w-[100px] text-slate-400" title={item.allergens}>
-              · {item.allergens}
+            <span className="text-slate-400" title={item.allergens}>
+              {item.allergens}
             </span>
           )}
         </div>
@@ -93,16 +94,16 @@ export default function MenuItemCard({ item }: { item: MenuItem }) {
               e.stopPropagation();
               handleCardClick();
             }}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 font-bold transition-all text-xs cursor-pointer shadow-2xs"
+            className="shrink-0 whitespace-nowrap flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 font-bold transition-all text-xs cursor-pointer shadow-2xs"
           >
             {hasOptions ? (
               <>
-                <SlidersHorizontal className="w-3 h-3" />
+                <SlidersHorizontal className="w-3.5 h-3.5" />
                 <span>Customize</span>
               </>
             ) : (
               <>
-                <Plus className="w-3 h-3" />
+                <Plus className="w-3.5 h-3.5" />
                 <span>Add</span>
               </>
             )}
