@@ -366,6 +366,17 @@ export async function getAnalyticsSummary() {
       paymentBreakdown[method] = (paymentBreakdown[method] || 0) + p.amount;
     }
 
+    // Order type breakdown
+    const orderTypes = ['dine-in', 'takeout', 'bar', 'delivery'] as const;
+    const orderTypeBreakdown: Record<string, { count: number; revenue: number }> = {};
+    for (const ot of orderTypes) {
+      const typeOrders = paidOrders.filter(o => o.orderType === ot);
+      orderTypeBreakdown[ot] = {
+        count: typeOrders.length,
+        revenue: typeOrders.reduce((sum, o) => sum + (o.total || 0), 0),
+      };
+    }
+
     return {
       totalOrders: allOrders.length,
       paidOrdersCount: paidOrders.length,
@@ -375,6 +386,7 @@ export async function getAnalyticsSummary() {
       averageOrderValueCents,
       topSellingItems,
       paymentBreakdown,
+      orderTypeBreakdown,
     };
   } catch (error) {
     console.error('Failed to get analytics summary:', error);

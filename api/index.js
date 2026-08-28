@@ -435,6 +435,15 @@ async function getAnalyticsSummary() {
       const method = p.method || "card";
       paymentBreakdown[method] = (paymentBreakdown[method] || 0) + p.amount;
     }
+    const orderTypes = ["dine-in", "takeout", "bar", "delivery"];
+    const orderTypeBreakdown = {};
+    for (const ot of orderTypes) {
+      const typeOrders = paidOrders.filter((o) => o.orderType === ot);
+      orderTypeBreakdown[ot] = {
+        count: typeOrders.length,
+        revenue: typeOrders.reduce((sum, o) => sum + (o.total || 0), 0)
+      };
+    }
     return {
       totalOrders: allOrders.length,
       paidOrdersCount: paidOrders.length,
@@ -443,7 +452,8 @@ async function getAnalyticsSummary() {
       totalTipsCents,
       averageOrderValueCents,
       topSellingItems,
-      paymentBreakdown
+      paymentBreakdown,
+      orderTypeBreakdown
     };
   } catch (error) {
     console.error("Failed to get analytics summary:", error);

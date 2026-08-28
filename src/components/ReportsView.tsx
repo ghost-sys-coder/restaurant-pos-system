@@ -11,6 +11,10 @@ import {
   Award,
   Calendar,
   Printer,
+  Utensils,
+  ShoppingBag,
+  Wine,
+  Truck,
 } from 'lucide-react';
 
 export default function ReportsView() {
@@ -34,6 +38,53 @@ export default function ReportsView() {
   const digitalSales = completedOrders
     .filter((o) => o.paymentMethod === 'digital')
     .reduce((sum, o) => sum + o.total, 0);
+
+  // Breakdown by order type (using ALL orders, not just completed, for coverage)
+  const orderTypeConfig = [
+    {
+      key: 'dine-in' as const,
+      label: 'Dine-In',
+      icon: Utensils,
+      color: 'text-indigo-600',
+      bar: 'bg-indigo-500',
+      badge: 'bg-indigo-50 border-indigo-200 text-indigo-700',
+    },
+    {
+      key: 'takeout' as const,
+      label: 'Takeout',
+      icon: ShoppingBag,
+      color: 'text-amber-600',
+      bar: 'bg-amber-500',
+      badge: 'bg-amber-50 border-amber-200 text-amber-700',
+    },
+    {
+      key: 'bar' as const,
+      label: 'Bar',
+      icon: Wine,
+      color: 'text-purple-600',
+      bar: 'bg-purple-500',
+      badge: 'bg-purple-50 border-purple-200 text-purple-700',
+    },
+    {
+      key: 'delivery' as const,
+      label: 'Delivery',
+      icon: Truck,
+      color: 'text-emerald-600',
+      bar: 'bg-emerald-500',
+      badge: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+    },
+  ];
+
+  const orderTypeStats = orderTypeConfig.map((cfg) => {
+    const typeOrders = completedOrders.filter((o) => o.orderType === cfg.key);
+    return {
+      ...cfg,
+      count: typeOrders.length,
+      revenue: typeOrders.reduce((sum, o) => sum + o.total, 0),
+    };
+  });
+
+  const maxTypeRevenue = Math.max(...orderTypeStats.map((s) => s.revenue), 1);
 
   // Top selling menu items count
   const itemCounts: Record<string, { name: string; count: number; revenue: number }> = {};
@@ -151,6 +202,59 @@ export default function ReportsView() {
           <span className="text-[10px] text-slate-500 mt-1">
             Across {completedOrders.length} checks
           </span>
+        </div>
+      </div>
+
+      {/* Order Channel Breakdown */}
+      <div className="p-5 rounded-xl bg-white border border-slate-200 shadow-xs shrink-0">
+        <div className="flex items-center gap-2 mb-4">
+          <BarChart3 className="w-4 h-4 text-indigo-600" />
+          <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider">
+            Sales by Order Channel
+          </h3>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {orderTypeStats.map((stat) => {
+            const Icon = stat.icon;
+            const pct = totalGross > 0 ? Math.round((stat.revenue / totalGross) * 100) : 0;
+            return (
+              <div
+                key={stat.key}
+                className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5"
+              >
+                {/* Label row */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Icon className={`w-4 h-4 ${stat.color}`} />
+                    <span className="text-xs font-bold text-slate-700">{stat.label}</span>
+                  </div>
+                  <span
+                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md border ${stat.badge}`}
+                  >
+                    {pct}%
+                  </span>
+                </div>
+
+                {/* Revenue */}
+                <p className="text-base font-extrabold font-mono text-slate-900">
+                  {formatCurrency(stat.revenue)}
+                </p>
+
+                {/* Progress bar */}
+                <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                  <div
+                    className={`${stat.bar} h-full rounded-full transition-all duration-500`}
+                    style={{ width: `${(stat.revenue / maxTypeRevenue) * 100}%` }}
+                  />
+                </div>
+
+                {/* Count */}
+                <p className="text-[11px] text-slate-400">
+                  {stat.count} {stat.count === 1 ? 'order' : 'orders'}
+                </p>
+              </div>
+            );
+          })}
         </div>
       </div>
 
