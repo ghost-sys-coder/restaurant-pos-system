@@ -3,6 +3,10 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 
+/* Category swatches are selected from stored color names at runtime. Keep the
+   complete, intentionally limited palette in the generated Tailwind output. */
+@source inline("bg-amber-500 bg-emerald-500 bg-blue-500 bg-violet-500 bg-rose-500 bg-slate-500");
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

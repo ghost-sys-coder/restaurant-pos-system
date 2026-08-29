@@ -1,8 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import { MenuItem } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
-import { X, Check, BookOpen } from 'lucide-react';
+import { X, Check, BookOpen, ImagePlus, LoaderCircle, Trash2 } from 'lucide-react';
 
 export default function MenuItemEditModal({
   item,
@@ -20,7 +20,10 @@ export default function MenuItemEditModal({
     item ? item.price.toString() : '25000'
   );
   const [description, setDescription] = useState<string>(item?.description || '');
-  const [imageUrl, setImageUrl] = useState<string>(item?.imageUrl || '');
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string>(item?.imageUrl || '');
+  const [removeImage, setRemoveImage] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [prepTimeMinutes, setPrepTimeMinutes] = useState<number>(
     item?.prepTimeMinutes || 10
   );
@@ -31,24 +34,28 @@ export default function MenuItemEditModal({
   );
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
+  useEffect(() => () => { if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+  useEffect(() => {
+    if (categories.length && !categories.some(category => category.id === categoryId)) setCategoryId(categories[0].id);
+  }, [categories, categoryId]);
+
+  const chooseImage = (file?: File) => {
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(file.type)) { showToast('Choose a JPG, PNG, WebP, or AVIF image'); return; }
+    if (file.size > 8 * 1024 * 1024) { showToast('Image must be 8 MB or smaller'); return; }
+    setImageFile(file); setRemoveImage(false); setPreviewUrl(URL.createObjectURL(file));
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || !categoryId) { showToast('Add and select a category before saving this item'); return; }
 
     setIsSubmitting(true);
     const parsedPrice = Math.round(parseFloat(priceUGX)) || 25000;
 
-    const payload = {
-      name: name.trim(),
-      categoryId,
-      price: parsedPrice,
-      description: description.trim(),
-      imageUrl: imageUrl.trim(),
-      prepTimeMinutes,
-      calories,
-      allergens: allergens.trim(),
-      isAvailable,
-    };
+    const payload = new FormData();
+    Object.entries({ name: name.trim(), categoryId, price: parsedPrice, description: description.trim(), prepTimeMinutes, calories, allergens: allergens.trim(), isAvailable, removeImage }).forEach(([key, value]) => payload.set(key, String(value)));
+    if (imageFile) payload.set('image', imageFile);
 
     try {
       const url = item ? `/api/menu-items/${item.id}` : '/api/menu-items';
@@ -56,8 +63,7 @@ export default function MenuItemEditModal({
 
       const res = await fetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: payload,
       });
 
       if (!res.ok) {
@@ -129,6 +135,7 @@ export default function MenuItemEditModal({
                 onChange={(e) => setCategoryId(Number(e.target.value))}
                 className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-indigo-500 shadow-2xs"
               >
+                {!categories.length && <option value="">Create a category first</option>}
                 {categories.map((cat) => (
                   <option key={cat.id} value={cat.id}>
                     {cat.name}
@@ -167,18 +174,22 @@ export default function MenuItemEditModal({
             />
           </div>
 
-          <div>
+          <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">
-              Image URL (Unsplash or hosted)
+              Menu image
             </label>
-            <input
-              type="text"
-              id="input-dish-img"
-              value={imageUrl}
-              onChange={(e) => setImageUrl(e.target.value)}
-              placeholder="https://images.unsplash.com/..."
-              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 shadow-2xs"
-            />
+            <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp,image/avif" className="sr-only" onChange={event => chooseImage(event.target.files?.[0])} />
+            <div className="flex gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="grid size-24 shrink-0 place-items-center overflow-hidden rounded-lg border border-slate-200 bg-white">
+                {previewUrl ? <img src={previewUrl} alt="Selected menu item preview" className="size-full object-cover" /> : <ImagePlus className="size-7 text-slate-300" />}
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col justify-center gap-2">
+                <p className="text-xs text-slate-500">Preview the selected image here. It is uploaded only when you save the item.</p>
+                <div className="flex flex-wrap gap-2"><button type="button" onClick={() => fileInputRef.current?.click()} className="rounded-lg bg-white px-3 py-2 text-xs font-bold text-indigo-700 shadow-xs ring-1 ring-slate-200 hover:bg-indigo-50">{previewUrl ? 'Change image' : 'Choose image'}</button>
+                {previewUrl && <button type="button" onClick={() => { setImageFile(null); setPreviewUrl(''); setRemoveImage(Boolean(item?.imageUrl)); if (fileInputRef.current) fileInputRef.current.value = ''; }} className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50"><Trash2 className="size-3.5" />Remove</button>}</div>
+                {imageFile && <p className="truncate text-[11px] font-medium text-slate-600">{imageFile.name} · {(imageFile.size / 1024 / 1024).toFixed(1)} MB</p>}
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-3 gap-3">
@@ -256,12 +267,12 @@ export default function MenuItemEditModal({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !categories.length}
               id="btn-save-menu-item"
               className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
             >
-              <Check className="w-4 h-4" />
-              <span>{item ? 'Save Changes' : 'Create Item'}</span>
+              {isSubmitting ? <LoaderCircle className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+              <span>{isSubmitting ? 'Saving…' : item ? 'Save Changes' : 'Create Item'}</span>
             </button>
           </div>
         </form>

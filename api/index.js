@@ -7,6 +7,7 @@ var __export = (target, all) => {
 // src/server/app.ts
 import "dotenv/config";
 import express from "express";
+import multer from "multer";
 
 // src/db/queries.ts
 import { desc, eq, and, sql as sql2, gte, isNull } from "drizzle-orm";
@@ -136,7 +137,7 @@ var categories = pgTable("categories", {
   color: text("color").default("amber"),
   sortOrder: integer("sort_order").default(0),
   createdAt: timestamp("created_at").defaultNow()
-});
+}, (table) => [uniqueIndex("categories_restaurant_name_unique").on(table.restaurantId, table.name)]);
 var menuItems = pgTable("menu_items", {
   id: serial("id").primaryKey(),
   restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
@@ -146,6 +147,7 @@ var menuItems = pgTable("menu_items", {
   price: integer("price").notNull(),
   // in cents (e.g. 1499 = $14.99)
   imageUrl: text("image_url"),
+  imagePublicId: text("image_public_id"),
   isAvailable: boolean("is_available").default(true),
   calories: integer("calories"),
   prepTimeMinutes: integer("prep_time_minutes").default(10),
@@ -322,6 +324,8 @@ async function getCategories(restaurantId) {
 }
 async function createCategory(restaurantId, name, icon = "Utensils", color = "amber") {
   try {
+    const existing = await db.select({ id: categories.id }).from(categories).where(and(eq(categories.restaurantId, restaurantId), sql2`lower(${categories.name}) = lower(${name})`)).limit(1);
+    if (existing[0]) throw new Error("A category with this name already exists");
     const res = await db.insert(categories).values({ restaurantId, name, icon, color }).returning();
     return res[0];
   } catch (error) {
@@ -339,6 +343,9 @@ async function getMenuItems(restaurantId, categoryId) {
     console.error("Failed to get menu items:", error);
     throw new Error("Database query failed: menuItems", { cause: error });
   }
+}
+async function getMenuItemById(restaurantId, id) {
+  return (await db.select().from(menuItems).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId))).limit(1))[0] ?? null;
 }
 async function createMenuItem(data) {
   try {
@@ -1082,10 +1089,69 @@ async function attachBackOfficeUser(input) {
   }).returning())[0];
 }
 
+// src/lib/cloudinary.ts
+import { v2 as cloudinary } from "cloudinary";
+function assertConfigured() {
+  if (process.env.CLOUDINARY_URL) return;
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+    throw new Error("Cloudinary credentials are not configured");
+  }
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure: true
+  });
+}
+async function uploadMenuImage(buffer, restaurantId) {
+  assertConfigured();
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream({
+      folder: `restaurant-pos/restaurants/${restaurantId}/menu`,
+      resource_type: "image",
+      overwrite: false,
+      transformation: [{ width: 1600, height: 1600, crop: "limit" }, { quality: "auto", fetch_format: "auto" }]
+    }, (error, result) => {
+      if (error || !result) reject(error || new Error("Cloudinary did not return an upload result"));
+      else resolve({ secureUrl: result.secure_url, publicId: result.public_id });
+    });
+    stream.end(buffer);
+  });
+}
+async function deleteMenuImage(publicId) {
+  if (!publicId) return;
+  assertConfigured();
+  await cloudinary.uploader.destroy(publicId, { resource_type: "image", invalidate: true });
+}
+
 // src/server/app.ts
 var clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 var clerkSecretKey = process.env.CLERK_SECRET_KEY;
 var app = express();
+var menuImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => callback(null, ["image/jpeg", "image/png", "image/webp", "image/avif"].includes(file.mimetype))
+});
+function menuItemPayload(body) {
+  const categoryId = Number(body.categoryId);
+  const price = Number(body.price);
+  const prepTimeMinutes = Number(body.prepTimeMinutes);
+  const calories = body.calories === "" || body.calories == null ? void 0 : Number(body.calories);
+  if (!String(body.name || "").trim() || !Number.isInteger(categoryId) || categoryId < 1 || !Number.isInteger(price) || price < 0) throw new Error("Name, category, and a valid price are required");
+  if (!Number.isInteger(prepTimeMinutes) || prepTimeMinutes < 1 || prepTimeMinutes > 240) throw new Error("Preparation time must be between 1 and 240 minutes");
+  if (calories !== void 0 && (!Number.isInteger(calories) || calories < 0 || calories > 1e5)) throw new Error("Calories must be a valid non-negative number");
+  return {
+    categoryId,
+    price,
+    prepTimeMinutes,
+    calories,
+    name: String(body.name).trim().slice(0, 120),
+    description: String(body.description || "").trim().slice(0, 1e3),
+    allergens: String(body.allergens || "").trim().slice(0, 500),
+    isAvailable: body.isAvailable === true || body.isAvailable === "true"
+  };
+}
 function publicStaff(staff) {
   return { id: staff.id, name: staff.name, role: staff.role, email: staff.email ?? null };
 }
@@ -1398,7 +1464,10 @@ app.get("/api/categories", async (req, res) => {
 });
 app.post("/api/categories", requirePermission("menu.manage"), async (req, res) => {
   try {
-    const { name, icon, color } = req.body;
+    const name = String(req.body.name || "").trim();
+    const icon = String(req.body.icon || "Utensils").trim();
+    const color = String(req.body.color || "amber").trim();
+    if (name.length < 2 || name.length > 60) return res.status(400).json({ error: "Category name must contain 2 to 60 characters" });
     const category = await createCategory(req.terminal.restaurantId, name, icon, color);
     res.json(category);
   } catch (error) {
@@ -1418,22 +1487,37 @@ app.get("/api/menu-items", async (req, res) => {
     res.status(500).json({ error: message });
   }
 });
-app.post("/api/menu-items", requirePermission("menu.manage"), async (req, res) => {
+app.post("/api/menu-items", requirePermission("menu.manage"), menuImageUpload.single("image"), async (req, res) => {
+  let uploaded = null;
   try {
-    const item = await createMenuItem({ ...req.body, restaurantId: req.terminal.restaurantId });
+    const payload = menuItemPayload(req.body);
+    if (req.file) uploaded = await uploadMenuImage(req.file.buffer, req.terminal.restaurantId);
+    const item = await createMenuItem({ ...payload, restaurantId: req.terminal.restaurantId, imageUrl: uploaded?.secureUrl, imagePublicId: uploaded?.publicId });
     res.json(item);
   } catch (error) {
+    if (uploaded) await deleteMenuImage(uploaded.publicId).catch(() => void 0);
     console.error("Failed to create menu item:", error);
     const message = error?.cause?.message || error?.message || "Failed to create menu item";
     res.status(500).json({ error: message });
   }
 });
-app.put("/api/menu-items/:id", requirePermission("menu.manage"), async (req, res) => {
+app.put("/api/menu-items/:id", requirePermission("menu.manage"), menuImageUpload.single("image"), async (req, res) => {
+  let uploaded = null;
   try {
     const id = Number(req.params.id);
-    const item = await updateMenuItem(req.terminal.restaurantId, id, req.body);
+    const current = await getMenuItemById(req.terminal.restaurantId, id);
+    if (!current) return res.status(404).json({ error: "Menu item not found" });
+    const payload = menuItemPayload(req.body);
+    if (req.file) uploaded = await uploadMenuImage(req.file.buffer, req.terminal.restaurantId);
+    const removeImage = req.body.removeImage === true || req.body.removeImage === "true";
+    const item = await updateMenuItem(req.terminal.restaurantId, id, {
+      ...payload,
+      ...uploaded ? { imageUrl: uploaded.secureUrl, imagePublicId: uploaded.publicId } : removeImage ? { imageUrl: "", imagePublicId: "" } : {}
+    });
+    if ((uploaded || removeImage) && current.imagePublicId) await deleteMenuImage(current.imagePublicId).catch((error) => console.warn("Menu record updated but old Cloudinary image cleanup failed", error));
     res.json(item);
   } catch (error) {
+    if (uploaded) await deleteMenuImage(uploaded.publicId).catch(() => void 0);
     console.error("Failed to update menu item:", error);
     const message = error?.cause?.message || error?.message || "Failed to update menu item";
     res.status(500).json({ error: message });

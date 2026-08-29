@@ -104,7 +104,7 @@ export const categories = pgTable('categories', {
   color: text('color').default('amber'),
   sortOrder: integer('sort_order').default(0),
   createdAt: timestamp('created_at').defaultNow(),
-});
+}, (table) => [uniqueIndex('categories_restaurant_name_unique').on(table.restaurantId, table.name)]);
 
 // Menu Items
 export const menuItems = pgTable('menu_items', {
@@ -115,6 +115,7 @@ export const menuItems = pgTable('menu_items', {
   description: text('description'),
   price: integer('price').notNull(), // in cents (e.g. 1499 = $14.99)
   imageUrl: text('image_url'),
+  imagePublicId: text('image_public_id'),
   isAvailable: boolean('is_available').default(true),
   calories: integer('calories'),
   prepTimeMinutes: integer('prep_time_minutes').default(10),

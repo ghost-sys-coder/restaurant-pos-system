@@ -3,7 +3,7 @@ import { usePos } from '../context/PosContext.tsx';
 import MenuItemEditModal from './MenuItemEditModal.tsx';
 import { MenuItem } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
-import { BookOpen, Plus, Edit2, Trash2, Search, Check, AlertCircle } from 'lucide-react';
+import { BookOpen, Plus, Edit2, Trash2, Search, Check, AlertCircle, Tags, LoaderCircle, X } from 'lucide-react';
 import ConfirmDialog from './ConfirmDialog.tsx';
 
 export default function MenuManagementView() {
@@ -13,6 +13,23 @@ export default function MenuManagementView() {
   const [search, setSearch] = useState<string>('');
   const [archiveTarget, setArchiveTarget] = useState<MenuItem | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [categoryName, setCategoryName] = useState('');
+  const [categoryColor, setCategoryColor] = useState('amber');
+  const [categoryBusy, setCategoryBusy] = useState(false);
+
+  const createNewCategory = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (categoryName.trim().length < 2) return;
+    setCategoryBusy(true);
+    try {
+      const response = await fetch('/api/categories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: categoryName.trim(), icon: 'Utensils', color: categoryColor }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Unable to create category');
+      await fetchData(); setCategoryName(''); setCategoryOpen(false); showToast(`${body.name} category created`);
+    } catch (error: any) { showToast(error?.message || 'Unable to create category'); }
+    finally { setCategoryBusy(false); }
+  };
 
   const filteredItems = menuItems.filter((i) => {
     if (!search.trim()) return true;
@@ -91,6 +108,7 @@ export default function MenuManagementView() {
             />
           </div>
 
+          <button onClick={() => setCategoryOpen(true)} className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs transition cursor-pointer shadow-xs shrink-0"><Tags className="w-4 h-4" /><span>New Category</span></button>
           <button
             id="btn-create-menu-dish"
             onClick={() => setIsCreating(true)}
@@ -235,6 +253,7 @@ export default function MenuManagementView() {
         />
       )}
       <ConfirmDialog open={Boolean(archiveTarget)} title="Archive this menu item?" description={`${archiveTarget?.name || 'This item'} will disappear from the active catalog while remaining attached to historical orders.`} confirmLabel="Archive item" busy={archiveBusy} onCancel={() => setArchiveTarget(null)} onConfirm={handleDeleteItem} />
+      {categoryOpen && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/55 p-4 backdrop-blur-xs"><form onSubmit={createNewCategory} className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl"><div className="mb-5 flex items-start justify-between"><div><h3 className="font-bold text-slate-900">Create menu category</h3><p className="mt-1 text-xs text-slate-500">Categories become available in the menu-item selector immediately.</p></div><button type="button" onClick={() => setCategoryOpen(false)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"><X className="size-4" /></button></div><label className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-600">Category name</label><input autoFocus value={categoryName} onChange={event => setCategoryName(event.target.value)} maxLength={60} placeholder="e.g. Main Courses" className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-500" /><label className="mb-2 mt-4 block text-xs font-bold uppercase tracking-wide text-slate-600">Label color</label><div className="flex gap-2">{['amber', 'emerald', 'blue', 'violet', 'rose', 'slate'].map(color => <button key={color} type="button" onClick={() => setCategoryColor(color)} aria-label={`${color} category color`} className={`size-8 rounded-full border-2 ${categoryColor === color ? 'border-slate-900 ring-2 ring-slate-200' : 'border-white'} bg-${color}-500`} />)}</div><div className="mt-6 flex gap-2"><button type="button" onClick={() => setCategoryOpen(false)} className="flex-1 rounded-xl bg-slate-100 py-2.5 text-xs font-bold text-slate-700">Cancel</button><button disabled={categoryBusy || categoryName.trim().length < 2} className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 py-2.5 text-xs font-bold text-white disabled:opacity-50">{categoryBusy && <LoaderCircle className="size-4 animate-spin" />}{categoryBusy ? 'Creating…' : 'Create category'}</button></div></form></div>}
     </div>
   );
 }

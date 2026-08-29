@@ -23,6 +23,8 @@ export async function getCategories(restaurantId: number) {
 
 export async function createCategory(restaurantId: number, name: string, icon = 'Utensils', color = 'amber') {
   try {
+    const existing = await db.select({ id: categories.id }).from(categories).where(and(eq(categories.restaurantId, restaurantId), sql`lower(${categories.name}) = lower(${name})`)).limit(1);
+    if (existing[0]) throw new Error('A category with this name already exists');
     const res = await db.insert(categories).values({ restaurantId, name, icon, color }).returning();
     return res[0];
   } catch (error) {
@@ -44,6 +46,10 @@ export async function getMenuItems(restaurantId: number, categoryId?: number) {
   }
 }
 
+export async function getMenuItemById(restaurantId: number, id: number) {
+  return (await db.select().from(menuItems).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId))).limit(1))[0] ?? null;
+}
+
 export async function createMenuItem(data: {
   restaurantId: number;
   categoryId?: number;
@@ -51,6 +57,7 @@ export async function createMenuItem(data: {
   description?: string;
   price: number;
   imageUrl?: string;
+  imagePublicId?: string;
   calories?: number;
   prepTimeMinutes?: number;
   allergens?: string;
@@ -75,6 +82,7 @@ export async function updateMenuItem(restaurantId: number, id: number, data: Par
   description: string;
   price: number;
   imageUrl: string;
+  imagePublicId: string;
   isAvailable: boolean;
   calories: number;
   prepTimeMinutes: number;

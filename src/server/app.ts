@@ -1,9 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
+import multer from 'multer';
 import {
   getCategories,
   createCategory,
   getMenuItems,
+  getMenuItemById,
   createMenuItem,
   updateMenuItem,
   deleteMenuItem,
@@ -27,11 +29,34 @@ import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE,
 import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
 import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, getRestaurantSettings, listRestaurantClients, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
+import { deleteMenuImage, uploadMenuImage } from '../lib/cloudinary.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
 
 const app = express();
+const menuImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(file.mimetype)),
+});
+
+function menuItemPayload(body: Record<string, any>) {
+  const categoryId = Number(body.categoryId);
+  const price = Number(body.price);
+  const prepTimeMinutes = Number(body.prepTimeMinutes);
+  const calories = body.calories === '' || body.calories == null ? undefined : Number(body.calories);
+  if (!String(body.name || '').trim() || !Number.isInteger(categoryId) || categoryId < 1 || !Number.isInteger(price) || price < 0) throw new Error('Name, category, and a valid price are required');
+  if (!Number.isInteger(prepTimeMinutes) || prepTimeMinutes < 1 || prepTimeMinutes > 240) throw new Error('Preparation time must be between 1 and 240 minutes');
+  if (calories !== undefined && (!Number.isInteger(calories) || calories < 0 || calories > 100_000)) throw new Error('Calories must be a valid non-negative number');
+  return {
+    categoryId, price, prepTimeMinutes, calories,
+    name: String(body.name).trim().slice(0, 120),
+    description: String(body.description || '').trim().slice(0, 1_000),
+    allergens: String(body.allergens || '').trim().slice(0, 500),
+    isAvailable: body.isAvailable === true || body.isAvailable === 'true',
+  };
+}
 
 function publicStaff(staff: { id: number; name: string | null; role: string | null; email?: string | null }) {
   return { id: staff.id, name: staff.name, role: staff.role, email: staff.email ?? null };
@@ -386,7 +411,10 @@ app.get('/api/categories', async (req: AuthRequest, res) => {
 
 app.post('/api/categories', requirePermission('menu.manage'), async (req: AuthRequest, res) => {
   try {
-    const { name, icon, color } = req.body;
+    const name = String(req.body.name || '').trim();
+    const icon = String(req.body.icon || 'Utensils').trim();
+    const color = String(req.body.color || 'amber').trim();
+    if (name.length < 2 || name.length > 60) return res.status(400).json({ error: 'Category name must contain 2 to 60 characters' });
     const category = await createCategory(req.terminal!.restaurantId, name, icon, color);
     res.json(category);
   } catch (error: any) {
@@ -409,23 +437,38 @@ app.get('/api/menu-items', async (req: AuthRequest, res) => {
   }
 });
 
-app.post('/api/menu-items', requirePermission('menu.manage'), async (req: AuthRequest, res) => {
+app.post('/api/menu-items', requirePermission('menu.manage'), menuImageUpload.single('image'), async (req: AuthRequest, res) => {
+  let uploaded: Awaited<ReturnType<typeof uploadMenuImage>> | null = null;
   try {
-    const item = await createMenuItem({ ...req.body, restaurantId: req.terminal!.restaurantId });
+    const payload = menuItemPayload(req.body);
+    if (req.file) uploaded = await uploadMenuImage(req.file.buffer, req.terminal!.restaurantId);
+    const item = await createMenuItem({ ...payload, restaurantId: req.terminal!.restaurantId, imageUrl: uploaded?.secureUrl, imagePublicId: uploaded?.publicId });
     res.json(item);
   } catch (error: any) {
+    if (uploaded) await deleteMenuImage(uploaded.publicId).catch(() => undefined);
     console.error('Failed to create menu item:', error);
     const message = error?.cause?.message || error?.message || 'Failed to create menu item';
     res.status(500).json({ error: message });
   }
 });
 
-app.put('/api/menu-items/:id', requirePermission('menu.manage'), async (req: AuthRequest, res) => {
+app.put('/api/menu-items/:id', requirePermission('menu.manage'), menuImageUpload.single('image'), async (req: AuthRequest, res) => {
+  let uploaded: Awaited<ReturnType<typeof uploadMenuImage>> | null = null;
   try {
     const id = Number(req.params.id);
-    const item = await updateMenuItem(req.terminal!.restaurantId, id, req.body);
+    const current = await getMenuItemById(req.terminal!.restaurantId, id);
+    if (!current) return res.status(404).json({ error: 'Menu item not found' });
+    const payload = menuItemPayload(req.body);
+    if (req.file) uploaded = await uploadMenuImage(req.file.buffer, req.terminal!.restaurantId);
+    const removeImage = req.body.removeImage === true || req.body.removeImage === 'true';
+    const item = await updateMenuItem(req.terminal!.restaurantId, id, {
+      ...payload,
+      ...(uploaded ? { imageUrl: uploaded.secureUrl, imagePublicId: uploaded.publicId } : removeImage ? { imageUrl: '', imagePublicId: '' } : {}),
+    });
+    if ((uploaded || removeImage) && current.imagePublicId) await deleteMenuImage(current.imagePublicId).catch(error => console.warn('Menu record updated but old Cloudinary image cleanup failed', error));
     res.json(item);
   } catch (error: any) {
+    if (uploaded) await deleteMenuImage(uploaded.publicId).catch(() => undefined);
     console.error('Failed to update menu item:', error);
     const message = error?.cause?.message || error?.message || 'Failed to update menu item';
     res.status(500).json({ error: message });

@@ -36,6 +36,13 @@
       "when": 1788023457446,
       "tag": "0004_clever_selene",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788031631718,
+      "tag": "0005_spotty_giant_man",
+      "breakpoints": true
     }
   ]
 }

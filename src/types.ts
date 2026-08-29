@@ -49,6 +49,7 @@ export interface MenuItem {
   description: string | null;
   price: number; // cents
   imageUrl: string | null;
+  imagePublicId?: string | null;
   isAvailable: boolean;
   calories: number | null;
   prepTimeMinutes: number;
