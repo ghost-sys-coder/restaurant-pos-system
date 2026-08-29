@@ -1,4 +1,11 @@
-export type Role = 'admin' | 'manager' | 'cashier' | 'waiter' | 'kitchen';
+export type PlatformRole = 'platform_owner' | 'platform_support' | 'platform_billing';
+export type BackOfficeRole = 'restaurant_owner' | 'restaurant_admin' | 'general_manager' | 'accountant';
+export type OperationalRole = 'shift_manager' | 'cashier' | 'server' | 'bartender' | 'host' | 'kitchen';
+export type Role = BackOfficeRole | OperationalRole;
+
+export const BACK_OFFICE_ROLES: BackOfficeRole[] = ['restaurant_owner', 'restaurant_admin', 'general_manager', 'accountant'];
+export const OPERATIONAL_ROLES: OperationalRole[] = ['shift_manager', 'cashier', 'server', 'bartender', 'host', 'kitchen'];
+export const RESTAURANT_ROLES: Role[] = [...BACK_OFFICE_ROLES, ...OPERATIONAL_ROLES];
 
 export type TableStatus = 'available' | 'occupied' | 'reserved' | 'cleaning' | 'billing';
 export type OrderType = 'dine-in' | 'takeout' | 'delivery' | 'bar';
@@ -9,8 +16,8 @@ export type ItemStatus = 'sent' | 'preparing' | 'ready' | 'served' | 'void';
 
 export interface User {
   id: number;
-  clerkUserId: string;
-  email: string;
+  clerkUserId?: string | null;
+  email?: string | null;
   name: string | null;
   role: Role;
   createdAt?: string;

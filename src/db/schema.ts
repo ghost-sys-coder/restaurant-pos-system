@@ -1,19 +1,98 @@
 import { relations } from 'drizzle-orm';
-import { boolean, integer, pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core';
+
+// A restaurant account may eventually contain several physical locations.
+export const restaurants = pgTable('restaurants', {
+  id: serial('id').primaryKey(),
+  clerkOrganizationId: text('clerk_organization_id').unique(),
+  slug: text('slug').unique(),
+  name: text('name').notNull(),
+  status: text('status').default('active').notNull(),
+  createdByClerkUserId: text('created_by_clerk_user_id'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const locations = pgTable('locations', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  name: text('name').notNull(),
+  timezone: text('timezone').default('Africa/Kampala').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('locations_restaurant_name_unique').on(table.restaurantId, table.name),
+]);
 
 // Users / Staff
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
-  clerkUserId: text('uid').notNull().unique(),
-  email: text('email').notNull(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id),
+  locationId: integer('location_id').references(() => locations.id),
+  clerkUserId: text('uid').unique(),
+  email: text('email'),
   name: text('name'),
   role: text('role').default('cashier'), // 'admin' | 'manager' | 'cashier' | 'waiter' | 'kitchen'
-  createdAt: timestamp('created_at').defaultNow(),
-});
+  pinHash: text('pin_hash'),
+  pinVersion: integer('pin_version').default(1).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => [
+  index('users_restaurant_location_idx').on(table.restaurantId, table.locationId),
+]);
+
+export const terminals = pgTable('terminals', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  name: text('name').notNull(),
+  type: text('type').default('register').notNull(),
+  credentialHash: text('credential_hash').notNull(),
+  enrolledByStaffId: integer('enrolled_by_staff_id').references(() => users.id),
+  isActive: boolean('is_active').default(true).notNull(),
+  inactivityTimeoutMinutes: integer('inactivity_timeout_minutes').default(15).notNull(),
+  failedPinAttempts: integer('failed_pin_attempts').default(0).notNull(),
+  lockedUntil: timestamp('locked_until'),
+  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at'),
+}, (table) => [
+  uniqueIndex('terminals_location_name_unique').on(table.locationId, table.name),
+]);
+
+export const staffSessions = pgTable('staff_sessions', {
+  id: serial('id').primaryKey(),
+  tokenHash: text('token_hash').notNull().unique(),
+  terminalId: integer('terminal_id').references(() => terminals.id).notNull(),
+  staffId: integer('staff_id').references(() => users.id).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  lastActivityAt: timestamp('last_activity_at').defaultNow().notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  revokedAt: timestamp('revoked_at'),
+}, (table) => [
+  index('staff_sessions_terminal_idx').on(table.terminalId),
+  index('staff_sessions_staff_idx').on(table.staffId),
+]);
+
+export const auditEvents = pgTable('audit_events', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  terminalId: integer('terminal_id').references(() => terminals.id),
+  actorStaffId: integer('actor_staff_id').references(() => users.id),
+  approverStaffId: integer('approver_staff_id').references(() => users.id),
+  action: text('action').notNull(),
+  entityType: text('entity_type'),
+  entityId: text('entity_id'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [
+  index('audit_events_restaurant_created_idx').on(table.restaurantId, table.createdAt),
+]);
 
 // Categories
 export const categories = pgTable('categories', {
   id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id),
   name: text('name').notNull(),
   icon: text('icon').default('Utensils'),
   color: text('color').default('amber'),
@@ -24,6 +103,7 @@ export const categories = pgTable('categories', {
 // Menu Items
 export const menuItems = pgTable('menu_items', {
   id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id),
   categoryId: integer('category_id').references(() => categories.id),
   name: text('name').notNull(),
   description: text('description'),
@@ -40,7 +120,8 @@ export const menuItems = pgTable('menu_items', {
 // Restaurant Tables
 export const restaurantTables = pgTable('restaurant_tables', {
   id: serial('id').primaryKey(),
-  tableNumber: text('table_number').notNull().unique(),
+  locationId: integer('location_id').references(() => locations.id),
+  tableNumber: text('table_number').notNull(),
   capacity: integer('capacity').default(4),
   section: text('section').default('Main Dining'), // Main Dining, Patio, Bar, VIP
   status: text('status').default('available'), // available, occupied, reserved, cleaning, billing
@@ -48,14 +129,17 @@ export const restaurantTables = pgTable('restaurant_tables', {
   posX: integer('pos_x').default(0),
   posY: integer('pos_y').default(0),
   createdAt: timestamp('created_at').defaultNow(),
-});
+}, (table) => [uniqueIndex('restaurant_tables_location_number_unique').on(table.locationId, table.tableNumber)]);
 
 // Orders
 export const orders = pgTable('orders', {
   id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id),
+  locationId: integer('location_id').references(() => locations.id),
   orderNumber: text('order_number').notNull(),
   orderType: text('order_type').default('dine-in'), // dine-in, takeout, delivery, bar
   tableId: integer('table_id').references(() => restaurantTables.id),
+  createdByStaffId: integer('created_by_staff_id').references(() => users.id),
   serverName: text('server_name').default('Server 1'),
   customerName: text('customer_name'),
   customerPhone: text('customer_phone'),
@@ -97,6 +181,7 @@ export const payments = pgTable('payments', {
   transactionRef: text('transaction_ref'),
   status: text('status').default('success'),
   processedBy: text('processed_by'),
+  processedByStaffId: integer('processed_by_staff_id').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

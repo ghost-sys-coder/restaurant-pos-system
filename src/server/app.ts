@@ -18,14 +18,70 @@ import {
   processPayment,
   getAnalyticsSummary,
 } from '../db/queries.ts';
-import { getOrCreateUser, getAllUsers, updateUserRole } from '../db/users.ts';
-import { AuthRequest, requireAuth, requireRole } from '../middleware/auth.ts';
+import { getAllUsers, getUserById, permanentlyDeleteUser, setUserActive, updateUserRole } from '../db/users.ts';
+import { AuthRequest, attachClerkAuth, getPlatformRole, permissionsForRole, requirePermission, requirePlatformRole, requireStaffSession, requireStrictAuth, requireTerminal } from '../middleware/auth.ts';
 import { clerkMiddleware, clerkClient, getAuth } from '@clerk/express';
+import { authenticatePin, createPinStaff, enrollTerminal, listTerminalStaff, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
+import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE, validatePinFormat } from '../auth/security.ts';
+import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
+import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
+import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, listRestaurantClients } from '../db/organizations.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
 
 const app = express();
+
+function publicStaff(staff: { id: number; name: string | null; role: string | null; email?: string | null }) {
+  return { id: staff.id, name: staff.name, role: staff.role, email: staff.email ?? null };
+}
+
+function publicTerminal(terminal: { id: number; name: string; type: string; locationId: number; inactivityTimeoutMinutes: number }) {
+  return {
+    id: terminal.id,
+    name: terminal.name,
+    type: terminal.type,
+    locationId: terminal.locationId,
+    inactivityTimeoutMinutes: terminal.inactivityTimeoutMinutes,
+  };
+}
+
+function platformSetupError(error: any): string {
+  const message = String(error?.errors?.[0]?.longMessage || error?.cause?.message || error?.message || 'Unable to create restaurant client');
+  const normalized = message.toLowerCase();
+  if (normalized.includes('does not exist') || normalized.includes('unknown column')) return 'The database has not been upgraded for client organizations. Run npm run db:migrate, then restart the application.';
+  if (normalized.includes('role') && (normalized.includes('invalid') || normalized.includes('not found') || normalized.includes('does not exist'))) return 'Clerk role org:restaurant_owner is missing. Create the custom Organization roles in the Clerk Dashboard, then try again.';
+  if (normalized.includes('organization') && (normalized.includes('disabled') || normalized.includes('not enabled'))) return 'Clerk Organizations are not enabled for this Clerk application.';
+  return message;
+}
+
+function invitationRedirectUrl(req: express.Request): string {
+  const configured = String(process.env.APP_URL || '').trim();
+  if (configured) {
+    try {
+      const url = new URL(configured);
+      if (url.protocol === 'http:' || url.protocol === 'https:') return new URL('/accept-invitation', url).toString();
+    } catch {
+      throw new Error('APP_URL must be an absolute http:// or https:// URL');
+    }
+  }
+  const forwardedProtocol = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = forwardedProtocol || req.protocol;
+  const host = req.get('host');
+  if (!host) throw new Error('Unable to determine the application URL');
+  return `${protocol}://${host}/accept-invitation`;
+}
+
+async function getOrCreateUserFromRequest(req: AuthRequest) {
+  const { userId, orgId, orgRole } = getAuth(req);
+  if (!userId || !orgId) throw new Error('Select your restaurant organization before continuing');
+  const appRole = appRoleForClerkRole(orgRole);
+  if (!appRole) throw new Error('Your organization role is not configured for restaurant access');
+  const clerkUser = await clerkClient.users.getUser(userId);
+  const email = clerkUser.primaryEmailAddress?.emailAddress || `${userId}@clerk.local`;
+  const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || clerkUser.username || email;
+  return attachBackOfficeUser({ clerkUserId: userId, email, name, orgId, role: appRole });
+}
 
 app.use(express.json());
 
@@ -38,59 +94,139 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-app.use('/api', requireAuth);
-app.use('/api/staff', requireRole(['admin', 'manager']));
-app.use('/api/analytics', requireRole(['admin', 'manager']));
+app.use('/api', attachClerkAuth);
 
 // Auth sync
-app.post('/api/auth/sync', async (req: AuthRequest, res) => {
+app.post('/api/auth/sync', requireStrictAuth, async (req: AuthRequest, res) => {
   try {
-    const { userId } = getAuth(req);
-    console.log('[sync] userId from getAuth:', userId);
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    console.log('[sync] fetching Clerk user for:', userId);
-    const clerkUser = await clerkClient.users.getUser(userId);
-    console.log('[sync] Clerk user fetched:', clerkUser.id);
-    const email = clerkUser.primaryEmailAddress?.emailAddress || `${userId}@clerk.local`;
-    const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || clerkUser.username || email;
-    const allowedRoles = ['admin', 'manager', 'cashier', 'waiter', 'kitchen'];
-    const rawRole = (clerkUser.publicMetadata?.role || clerkUser.unsafeMetadata?.role || clerkUser.privateMetadata?.role || 'cashier') as string;
-    const normalizedRole = typeof rawRole === 'string' ? rawRole.toLowerCase().trim() : 'cashier';
-    const defaultRole = allowedRoles.includes(normalizedRole) ? normalizedRole : 'cashier';
-
-    // Preserves existing database role if already stored in PostgreSQL
-    const user = await getOrCreateUser(userId, email, name, defaultRole);
-
-    // Keep Clerk publicMetadata synchronized with the database role
-    const dbRole = user.role;
-    const clerkRole = clerkUser.publicMetadata?.role;
-    if (dbRole && dbRole !== clerkRole) {
-      console.log(`[sync] Updating Clerk user ${userId} metadata role from '${clerkRole}' to DB role '${dbRole}'`);
-      try {
-        await clerkClient.users.updateUserMetadata(userId, {
-          publicMetadata: {
-            ...(typeof clerkUser.publicMetadata === 'object' && clerkUser.publicMetadata !== null ? clerkUser.publicMetadata : {}),
-            role: dbRole,
-          },
-        });
-      } catch (clerkErr) {
-        console.warn('[sync] Could not update Clerk user metadata:', clerkErr);
-      }
-    }
-
-    console.log('[sync] success:', user);
-    res.json(user);
+    res.json(await getOrCreateUserFromRequest(req));
   } catch (error: any) {
-    console.error('[sync] FAILED:', error);
-    const message = error?.cause?.message || error?.message || 'Auth sync failed';
-    res.status(500).json({ error: message });
+    res.status(403).json({ error: error?.message || 'Organization access could not be synchronized' });
   }
 });
 
-// Staff users
-app.get('/api/staff', async (req, res) => {
+app.get('/api/platform/session', requireStrictAuth, async (req: AuthRequest, res) => {
+  const role = await getPlatformRole(req.authUserId!);
+  res.json({ role });
+});
+
+app.get('/api/platform/clients', requireStrictAuth, requirePlatformRole(['platform_owner', 'platform_support', 'platform_billing']), async (_req, res) => {
   try {
-    const users = await getAllUsers();
+    res.json(await listRestaurantClients());
+  } catch (error: any) {
+    res.status(500).json({ error: platformSetupError(error) });
+  }
+});
+
+app.post('/api/platform/clients', requireStrictAuth, requirePlatformRole(['platform_owner']), async (req: AuthRequest, res) => {
+  const name = String(req.body.name || '').trim();
+  const ownerEmail = String(req.body.ownerEmail || '').trim().toLowerCase();
+  if (name.length < 2 || !/^\S+@\S+\.\S+$/.test(ownerEmail)) return res.status(400).json({ error: 'Restaurant name and valid owner email are required' });
+  let organization: Awaited<ReturnType<typeof clerkClient.organizations.createOrganization>> | null = null;
+  try {
+    organization = await clerkClient.organizations.createOrganization({ name, createdBy: req.authUserId, maxAllowedMemberships: 50 });
+    const invitation = await clerkClient.organizations.createOrganizationInvitation({
+      organizationId: organization.id,
+      inviterUserId: req.authUserId,
+      emailAddress: ownerEmail,
+      role: clerkRoleForAppRole.restaurant_owner,
+      redirectUrl: invitationRedirectUrl(req),
+    });
+    const record = await createRestaurantRecord({ clerkOrganizationId: organization.id, name, slug: organization.slug || organization.id, createdByClerkUserId: req.authUserId! });
+    await clerkClient.organizations.deleteOrganizationMembership({ organizationId: organization.id, userId: req.authUserId! }).catch(error => console.warn('Could not remove temporary platform membership', error));
+    res.status(201).json({ restaurant: record.restaurant, invitation: { id: invitation.id, emailAddress: invitation.emailAddress, status: invitation.status } });
+  } catch (error: any) {
+    if (organization) await clerkClient.organizations.deleteOrganization(organization.id).catch(() => undefined);
+    res.status(400).json({ error: platformSetupError(error) });
+  }
+});
+
+app.post('/api/organization/invitations', requireStrictAuth, requireTerminal, requireStaffSession, async (req: AuthRequest, res) => {
+  try {
+    const { userId, orgId, orgRole } = getAuth(req);
+    if (!userId || !orgId) return res.status(400).json({ error: 'Select a restaurant organization first' });
+    const actorRole = appRoleForClerkRole(orgRole);
+    if (actorRole !== 'restaurant_owner' || req.staff?.role !== 'restaurant_owner') return res.status(403).json({ error: 'Only the active restaurant owner can invite back-office administrators' });
+    const restaurant = await getRestaurantByClerkOrgId(orgId);
+    if (!restaurant || restaurant.status !== 'active') return res.status(404).json({ error: 'Restaurant organization not found' });
+    if (restaurant.id !== req.terminal!.restaurantId) return res.status(403).json({ error: 'The active terminal does not belong to this organization' });
+    const emailAddress = String(req.body.emailAddress || '').trim().toLowerCase();
+    const role = String(req.body.role || 'restaurant_admin') as BackOfficeRole;
+    if (!BACK_OFFICE_ROLES.includes(role) || role === 'restaurant_owner') return res.status(400).json({ error: 'Invalid back-office role' });
+    const invitation = await clerkClient.organizations.createOrganizationInvitation({ organizationId: orgId, inviterUserId: userId, emailAddress, role: clerkRoleForAppRole[role], redirectUrl: invitationRedirectUrl(req) });
+    res.status(201).json({ id: invitation.id, emailAddress: invitation.emailAddress, status: invitation.status, role });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.errors?.[0]?.longMessage || error?.message || 'Unable to send invitation' });
+  }
+});
+
+// Terminal enrollment is the only device operation that requires the stronger
+// Clerk identity. Daily staff access uses the terminal plus an employee PIN.
+app.post('/api/access/terminal/enroll', requireStrictAuth, async (req: AuthRequest, res) => {
+  try {
+    const clerkStaff = await getOrCreateUserFromRequest(req);
+    if (!['restaurant_owner', 'restaurant_admin', 'general_manager'].includes(String(clerkStaff.role))) return res.status(403).json({ error: 'Your restaurant role cannot enroll terminals' });
+    const name = String(req.body.name || '').trim();
+    const pin = String(req.body.pin || '');
+    if (name.length < 2 || name.length > 60) return res.status(400).json({ error: 'Terminal name must contain 2 to 60 characters' });
+    if (!validatePinFormat(pin)) return res.status(400).json({ error: 'Administrator PIN must contain 4 to 6 digits' });
+    await setStaffPin(clerkStaff.id, pin);
+    const { terminal, rawToken } = await enrollTerminal(clerkStaff.id, name, String(req.body.type || 'register'));
+    res.setHeader('Set-Cookie', sessionCookie(TERMINAL_COOKIE, rawToken, 60 * 60 * 24 * 90));
+    res.status(201).json({ terminal: publicTerminal(terminal) });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Unable to enroll terminal' });
+  }
+});
+
+app.get('/api/access/terminal', requireTerminal, (req: AuthRequest, res) => {
+  res.json({ terminal: publicTerminal(req.terminal!) });
+});
+
+app.get('/api/access/profiles', requireTerminal, async (req: AuthRequest, res) => {
+  res.json(await listTerminalStaff(req.terminal!.id));
+});
+
+app.post('/api/access/login', requireTerminal, async (req: AuthRequest, res) => {
+  const staffId = Number(req.body.staffId);
+  const pin = String(req.body.pin || '');
+  if (!Number.isInteger(staffId) || !validatePinFormat(pin)) return res.status(400).json({ error: 'Select a profile and enter a valid PIN' });
+  const result = await authenticatePin(req.terminal!.id, staffId, pin);
+  if (!result.ok) {
+    const status = result.reason === 'locked' ? 429 : 401;
+    return res.status(status).json({ error: result.reason === 'locked' ? 'Too many attempts. Try again in one minute.' : 'Incorrect PIN' });
+  }
+  res.setHeader('Set-Cookie', sessionCookie(STAFF_COOKIE, result.rawToken, 60 * 60 * 12));
+  res.json({ staff: publicStaff(result.staff), permissions: permissionsForRole(result.staff.role as Role) });
+});
+
+app.post('/api/access/lock', requireTerminal, async (req: AuthRequest, res) => {
+  await revokeStaffSession(readCookies(req.headers.cookie)[STAFF_COOKIE]);
+  res.setHeader('Set-Cookie', clearCookie(STAFF_COOKIE));
+  res.json({ success: true });
+});
+
+app.get('/api/access/session', requireTerminal, requireStaffSession, (req: AuthRequest, res) => {
+  res.json({ staff: publicStaff(req.staff!), permissions: permissionsForRole(req.staff!.role as Role) });
+});
+
+// Every route declared below requires both an enrolled terminal and an active
+// employee PIN session. This deliberately replaces the old permissive guard.
+app.use('/api', requireTerminal, requireStaffSession);
+app.use('/api/staff', requirePermission('staff.manage'));
+app.use('/api/analytics', requirePermission('reports.view'));
+
+app.delete('/api/access/terminal', requirePermission('terminals.manage'), async (req: AuthRequest, res) => {
+  await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'terminal.revoked', entityType: 'terminal', entityId: String(req.terminal!.id) });
+  await revokeTerminal(req.terminal!.id);
+  res.setHeader('Set-Cookie', [clearCookie(STAFF_COOKIE), clearCookie(TERMINAL_COOKIE)]);
+  res.json({ success: true });
+});
+
+// Staff users
+app.get('/api/staff', async (req: AuthRequest, res) => {
+  try {
+    const users = await getAllUsers(req.terminal!.restaurantId, req.terminal!.locationId);
     res.json(users);
   } catch (error: any) {
     console.error('Failed to get staff:', error);
@@ -99,34 +235,90 @@ app.get('/api/staff', async (req, res) => {
   }
 });
 
+app.post('/api/staff', async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const role = String(req.body.role || '').toLowerCase();
+    const pin = String(req.body.pin || '');
+    if (name.length < 2 || !OPERATIONAL_ROLES.includes(role as any) || !validatePinFormat(pin)) {
+      return res.status(400).json({ error: 'Name, valid role, and a 4 to 6 digit PIN are required' });
+    }
+    const staff = await createPinStaff({
+      restaurantId: req.terminal!.restaurantId,
+      locationId: req.terminal!.locationId,
+      name,
+      role,
+      pin,
+    });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'staff.created', entityType: 'staff', entityId: String(staff.id), metadata: { role } });
+    res.status(201).json(publicStaff(staff));
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Unable to create staff profile' });
+  }
+});
+
+app.patch('/api/staff/:id/pin', async (req: AuthRequest, res) => {
+  try {
+    const pin = String(req.body.pin || '');
+    if (!validatePinFormat(pin)) return res.status(400).json({ error: 'PIN must contain 4 to 6 digits' });
+    const target = await getUserById(Number(req.params.id));
+    if (!target || target.restaurantId !== req.terminal!.restaurantId) return res.status(404).json({ error: 'Staff profile not found' });
+    const staff = await setStaffPin(target.id, pin);
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'staff.pin_reset', entityType: 'staff', entityId: String(staff.id) });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Unable to reset PIN' });
+  }
+});
+
+app.patch('/api/staff/:id/access', async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    const isActive = req.body.isActive;
+    if (typeof isActive !== 'boolean') return res.status(400).json({ error: 'An active access state is required' });
+    const target = await getUserById(id);
+    if (!target || target.restaurantId !== req.terminal!.restaurantId || target.locationId !== req.terminal!.locationId) return res.status(404).json({ error: 'Staff profile not found' });
+    if (target.id === req.staff!.id && !isActive) return res.status(400).json({ error: 'You cannot revoke your own active session' });
+    const updated = await setUserActive(id, isActive);
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: isActive ? 'staff.access_restored' : 'staff.access_revoked', entityType: 'staff', entityId: String(id) });
+    res.json(publicStaff(updated!));
+  } catch (error: any) {
+    res.status(400).json({ error: error?.message || 'Unable to change staff access' });
+  }
+});
+
+app.delete('/api/staff/:id', async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    const target = await getUserById(id);
+    if (!target || target.restaurantId !== req.terminal!.restaurantId || target.locationId !== req.terminal!.locationId) return res.status(404).json({ error: 'Staff profile not found' });
+    if (target.id === req.staff!.id) return res.status(400).json({ error: 'You cannot delete your own active profile' });
+    if (target.clerkUserId) return res.status(400).json({ error: 'Back-office users must be removed from the Clerk organization; revoke their POS access here instead' });
+    await permanentlyDeleteUser(id);
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'staff.deleted', entityType: 'staff', entityId: String(id), metadata: { name: target.name, role: target.role } });
+    res.json({ success: true });
+  } catch (error: any) {
+    const detail = String(error?.cause?.message || error?.message || '');
+    const referenced = detail.toLowerCase().includes('foreign key');
+    res.status(400).json({ error: referenced ? 'This staff profile has business history and cannot be deleted. Revoke access instead.' : detail || 'Unable to delete staff profile' });
+  }
+});
+
 // Update staff role
-app.patch('/api/staff/:id/role', requireRole(['admin']), async (req, res) => {
+app.patch('/api/staff/:id/role', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
     const { role } = req.body;
-    const allowedRoles = ['admin', 'manager', 'cashier', 'waiter', 'kitchen'];
-    if (!allowedRoles.includes(role)) {
+    if (!OPERATIONAL_ROLES.includes(role as any)) {
       return res.status(400).json({ error: 'Invalid role' });
     }
 
+    if (!['restaurant_owner', 'restaurant_admin', 'general_manager'].includes(String(req.staff?.role))) return res.status(403).json({ error: 'Restaurant administrator permission required' });
+    const target = await getUserById(id);
+    if (!target || target.restaurantId !== req.terminal!.restaurantId) return res.status(404).json({ error: 'User not found' });
     const updatedUser = await updateUserRole(id, role);
     if (!updatedUser) {
       return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Sync role back to Clerk metadata
-    if (updatedUser.clerkUserId) {
-      try {
-        const clerkUser = await clerkClient.users.getUser(updatedUser.clerkUserId);
-        await clerkClient.users.updateUserMetadata(updatedUser.clerkUserId, {
-          publicMetadata: {
-            ...(typeof clerkUser.publicMetadata === 'object' && clerkUser.publicMetadata !== null ? clerkUser.publicMetadata : {}),
-            role: updatedUser.role,
-          },
-        });
-      } catch (clerkErr) {
-        console.warn('Could not update Clerk metadata on role change:', clerkErr);
-      }
     }
 
     res.json(updatedUser);
@@ -138,9 +330,9 @@ app.patch('/api/staff/:id/role', requireRole(['admin']), async (req, res) => {
 });
 
 // Categories
-app.get('/api/categories', async (req, res) => {
+app.get('/api/categories', async (req: AuthRequest, res) => {
   try {
-    const categories = await getCategories();
+    const categories = await getCategories(req.terminal!.restaurantId);
     res.json(categories);
   } catch (error: any) {
     console.error('Failed to fetch categories:', error);
@@ -149,10 +341,10 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-app.post('/api/categories', requireRole(['admin', 'manager']), async (req, res) => {
+app.post('/api/categories', requirePermission('menu.manage'), async (req: AuthRequest, res) => {
   try {
     const { name, icon, color } = req.body;
-    const category = await createCategory(name, icon, color);
+    const category = await createCategory(req.terminal!.restaurantId, name, icon, color);
     res.json(category);
   } catch (error: any) {
     console.error('Failed to create category:', error);
@@ -162,10 +354,10 @@ app.post('/api/categories', requireRole(['admin', 'manager']), async (req, res) 
 });
 
 // Menu items
-app.get('/api/menu-items', async (req, res) => {
+app.get('/api/menu-items', async (req: AuthRequest, res) => {
   try {
     const categoryId = req.query.categoryId ? Number(req.query.categoryId) : undefined;
-    const items = await getMenuItems(categoryId);
+    const items = await getMenuItems(req.terminal!.restaurantId, categoryId);
     res.json(items);
   } catch (error: any) {
     console.error('Failed to fetch menu items:', error);
@@ -174,9 +366,9 @@ app.get('/api/menu-items', async (req, res) => {
   }
 });
 
-app.post('/api/menu-items', requireRole(['admin', 'manager']), async (req, res) => {
+app.post('/api/menu-items', requirePermission('menu.manage'), async (req: AuthRequest, res) => {
   try {
-    const item = await createMenuItem(req.body);
+    const item = await createMenuItem({ ...req.body, restaurantId: req.terminal!.restaurantId });
     res.json(item);
   } catch (error: any) {
     console.error('Failed to create menu item:', error);
@@ -185,10 +377,10 @@ app.post('/api/menu-items', requireRole(['admin', 'manager']), async (req, res) 
   }
 });
 
-app.put('/api/menu-items/:id', requireRole(['admin', 'manager']), async (req, res) => {
+app.put('/api/menu-items/:id', requirePermission('menu.manage'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const item = await updateMenuItem(id, req.body);
+    const item = await updateMenuItem(req.terminal!.restaurantId, id, req.body);
     res.json(item);
   } catch (error: any) {
     console.error('Failed to update menu item:', error);
@@ -197,10 +389,10 @@ app.put('/api/menu-items/:id', requireRole(['admin', 'manager']), async (req, re
   }
 });
 
-app.delete('/api/menu-items/:id', requireRole(['admin', 'manager']), async (req, res) => {
+app.delete('/api/menu-items/:id', requirePermission('menu.manage'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    await deleteMenuItem(id);
+    await deleteMenuItem(req.terminal!.restaurantId, id);
     res.json({ success: true });
   } catch (error: any) {
     console.error('Failed to delete menu item:', error);
@@ -210,9 +402,9 @@ app.delete('/api/menu-items/:id', requireRole(['admin', 'manager']), async (req,
 });
 
 // Tables
-app.get('/api/tables', async (req, res) => {
+app.get('/api/tables', async (req: AuthRequest, res) => {
   try {
-    const tables = await getTables();
+    const tables = await getTables(req.terminal!.locationId);
     res.json(tables);
   } catch (error: any) {
     console.error('Failed to fetch tables:', error);
@@ -221,10 +413,10 @@ app.get('/api/tables', async (req, res) => {
   }
 });
 
-app.post('/api/tables', async (req, res) => {
+app.post('/api/tables', requirePermission('tables.manage'), async (req: AuthRequest, res) => {
   try {
     const { tableNumber, capacity, section, posX, posY } = req.body;
-    const table = await createTable(tableNumber, Number(capacity), section, posX, posY);
+    const table = await createTable(req.terminal!.locationId, tableNumber, Number(capacity), section, posX, posY);
     res.json(table);
   } catch (error: any) {
     console.error('Failed to create table:', error);
@@ -233,11 +425,11 @@ app.post('/api/tables', async (req, res) => {
   }
 });
 
-app.patch('/api/tables/:id', async (req, res) => {
+app.patch('/api/tables/:id', requirePermission('tables.manage'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
     const { status, currentOrderId } = req.body;
-    const table = await updateTableStatus(id, status, currentOrderId);
+    const table = await updateTableStatus(req.terminal!.locationId, id, status, currentOrderId);
     res.json(table);
   } catch (error: any) {
     console.error('Failed to update table:', error);
@@ -247,10 +439,10 @@ app.patch('/api/tables/:id', async (req, res) => {
 });
 
 // Orders
-app.get('/api/orders', async (req, res) => {
+app.get('/api/orders', async (req: AuthRequest, res) => {
   try {
     const statusFilter = req.query.status as string | undefined;
-    const ordersList = await getOrders(statusFilter);
+    const ordersList = await getOrders(req.terminal!.restaurantId, statusFilter);
     res.json(ordersList);
   } catch (error: any) {
     console.error('Failed to fetch orders:', error);
@@ -259,10 +451,10 @@ app.get('/api/orders', async (req, res) => {
   }
 });
 
-app.get('/api/orders/:id', async (req, res) => {
+app.get('/api/orders/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const order = await getOrderById(id);
+    const order = await getOrderById(req.terminal!.restaurantId, id);
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
     }
@@ -274,9 +466,9 @@ app.get('/api/orders/:id', async (req, res) => {
   }
 });
 
-app.post('/api/orders', async (req, res) => {
+app.post('/api/orders', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   try {
-    const order = await createOrder(req.body);
+    const order = await createOrder({ ...req.body, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
     res.json(order);
   } catch (error: any) {
     console.error('Failed to create order:', error);
@@ -285,11 +477,14 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
-app.patch('/api/orders/:id/status', async (req, res) => {
+app.patch('/api/orders/:id/status', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
     const { status } = req.body;
-    const order = await updateOrderStatus(id, status);
+    if (status === 'cancelled' && !['restaurant_owner', 'restaurant_admin', 'general_manager', 'shift_manager'].includes(String((req as AuthRequest).staff?.role))) {
+      return res.status(403).json({ error: 'Manager approval required to cancel an order' });
+    }
+    const order = await updateOrderStatus(req.terminal!.restaurantId, id, status);
     res.json(order);
   } catch (error: any) {
     console.error('Failed to update order status:', error);
@@ -298,11 +493,11 @@ app.patch('/api/orders/:id/status', async (req, res) => {
   }
 });
 
-app.patch('/api/orders/items/:id/status', async (req, res) => {
+app.patch('/api/orders/items/:id/status', requirePermission('kitchen.manage'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
     const { status } = req.body;
-    const item = await updateOrderItemStatus(id, status);
+    const item = await updateOrderItemStatus(req.terminal!.restaurantId, id, status);
     res.json(item);
   } catch (error: any) {
     console.error('Failed to update item status:', error);
@@ -311,15 +506,16 @@ app.patch('/api/orders/items/:id/status', async (req, res) => {
   }
 });
 
-app.post('/api/orders/:id/pay', async (req, res) => {
+app.post('/api/orders/:id/pay', requirePermission('payments.process'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const { amount, tip, method, processedBy, transactionRef } = req.body;
-    const order = await processPayment(id, {
+    const { amount, tip, method, transactionRef } = req.body;
+    const order = await processPayment(req.terminal!.restaurantId, id, {
       amount,
       tip,
       method,
-      processedBy,
+      processedBy: req.staff?.name || 'Cashier',
+      processedByStaffId: req.staff?.id,
       transactionRef,
     });
     res.json(order);
@@ -331,9 +527,9 @@ app.post('/api/orders/:id/pay', async (req, res) => {
 });
 
 // Analytics
-app.get('/api/analytics', async (req, res) => {
+app.get('/api/analytics', async (req: AuthRequest, res) => {
   try {
-    const analytics = await getAnalyticsSummary();
+    const analytics = await getAnalyticsSummary(req.terminal!.restaurantId);
     res.json(analytics);
   } catch (error: any) {
     console.error('Failed to get analytics:', error);

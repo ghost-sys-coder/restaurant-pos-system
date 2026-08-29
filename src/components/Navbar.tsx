@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useUser } from '@clerk/react';
+import StaffManagementModal from './StaffManagementModal.tsx';
 import {
   Store,
   LayoutGrid,
@@ -24,11 +25,12 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 export default function Navbar() {
   const { activeView, setActiveView, orders, tables } = usePos();
-  const { currentUser, signOut } = useAuth();
+  const { currentUser, lockTerminal, permissions } = useAuth();
   const { user } = useUser();
   const [timeStr, setTimeStr] = useState<string>('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState<boolean>(false);
+  const [staffManagerOpen, setStaffManagerOpen] = useState<boolean>(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,28 +67,30 @@ export default function Navbar() {
   const occupiedTablesCount = tables.filter(t => t.status === 'occupied').length;
 
   // Primary Floor Operations
-  const floorNavItems: Array<{ view: ActiveView; label: string; icon: any; badge?: number }> = [
-    { view: 'register', label: 'Register', icon: Store },
+  const floorNavItems = ([
+    { view: 'register', label: 'Register', icon: Store, permission: 'orders.write' },
     {
       view: 'tables',
       label: 'Tables',
       icon: LayoutGrid,
+      permission: 'tables.manage',
       badge: occupiedTablesCount > 0 ? occupiedTablesCount : undefined,
     },
     {
       view: 'kds',
       label: 'Kitchen KDS',
       icon: UtensilsCrossed,
+      permission: 'kitchen.manage',
       badge: activeOrdersCount > 0 ? activeOrdersCount : undefined,
     },
-  ];
+  ] as Array<{ view: ActiveView; label: string; icon: any; badge?: number; permission?: string }>).filter(item => !item.permission || permissions.includes(item.permission));
 
   // Secondary Management & Back-office
-  const managementNavItems: Array<{ view: ActiveView; label: string; icon: any }> = [
+  const managementNavItems = ([
     { view: 'orders', label: 'Orders', icon: ReceiptText },
-    { view: 'reports', label: 'Analytics', icon: BarChart3 },
-    { view: 'menu_manager', label: 'Menu', icon: BookOpen },
-  ];
+    { view: 'reports', label: 'Analytics', icon: BarChart3, permission: 'reports.view' },
+    { view: 'menu_manager', label: 'Menu', icon: BookOpen, permission: 'menu.manage' },
+  ] as Array<{ view: ActiveView; label: string; icon: any; permission?: string }>).filter(item => !item.permission || permissions.includes(item.permission));
 
   const handleNavClick = (view: ActiveView) => {
     setActiveView(view);
@@ -94,7 +98,7 @@ export default function Navbar() {
   };
 
   const displayName = currentUser?.name || user?.fullName || currentUser?.email?.split('@')[0] || user?.firstName || 'Staff';
-  const roleName = (currentUser?.role || (user?.publicMetadata?.role as string) || (user?.unsafeMetadata?.role as string) || 'admin').toLowerCase();
+  const roleName = (currentUser?.role || (user?.publicMetadata?.role as string) || (user?.unsafeMetadata?.role as string) || 'cashier').toLowerCase();
 
   return (
     <header
@@ -232,16 +236,17 @@ export default function Navbar() {
                 </div>
               </div>
 
+              {permissions.includes('staff.manage') && <button onClick={() => { setProfileDropdownOpen(false); setStaffManagerOpen(true); }} className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer"><ShieldCheck className="w-3.5 h-3.5" /><span>Manage Staff PINs</span></button>}
               <button
                 id="dropdown-signout"
                 onClick={() => {
                   setProfileDropdownOpen(false);
-                  signOut();
+                  lockTerminal();
                 }}
                 className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 transition cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5" />
-                <span>Sign Out of POS</span>
+                <span>Lock &amp; Switch User</span>
               </button>
             </div>
           )}
@@ -304,15 +309,16 @@ export default function Navbar() {
 
           <div className="pt-2 border-t border-slate-100">
             <button
-              onClick={signOut}
+              onClick={lockTerminal}
               className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 transition cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
-              <span>Sign Out</span>
+              <span>Lock &amp; Switch User</span>
             </button>
           </div>
         </div>
       )}
+      {staffManagerOpen && <StaffManagementModal onClose={() => setStaffManagerOpen(false)} />}
     </header>
   );
 }

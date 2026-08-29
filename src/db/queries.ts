@@ -10,18 +10,18 @@ import {
 } from './schema.ts';
 
 // Categories
-export async function getCategories() {
+export async function getCategories(restaurantId: number) {
   try {
-    return await db.select().from(categories).orderBy(categories.sortOrder, categories.name);
+    return await db.select().from(categories).where(eq(categories.restaurantId, restaurantId)).orderBy(categories.sortOrder, categories.name);
   } catch (error) {
     console.error('Failed to get categories:', error);
     throw new Error('Database query failed: categories', { cause: error });
   }
 }
 
-export async function createCategory(name: string, icon = 'Utensils', color = 'amber') {
+export async function createCategory(restaurantId: number, name: string, icon = 'Utensils', color = 'amber') {
   try {
-    const res = await db.insert(categories).values({ name, icon, color }).returning();
+    const res = await db.insert(categories).values({ restaurantId, name, icon, color }).returning();
     return res[0];
   } catch (error) {
     console.error('Failed to create category:', error);
@@ -30,12 +30,12 @@ export async function createCategory(name: string, icon = 'Utensils', color = 'a
 }
 
 // Menu Items
-export async function getMenuItems(categoryId?: number) {
+export async function getMenuItems(restaurantId: number, categoryId?: number) {
   try {
     if (categoryId) {
-      return await db.select().from(menuItems).where(eq(menuItems.categoryId, categoryId)).orderBy(menuItems.name);
+      return await db.select().from(menuItems).where(and(eq(menuItems.restaurantId, restaurantId), eq(menuItems.categoryId, categoryId))).orderBy(menuItems.name);
     }
-    return await db.select().from(menuItems).orderBy(menuItems.name);
+    return await db.select().from(menuItems).where(eq(menuItems.restaurantId, restaurantId)).orderBy(menuItems.name);
   } catch (error) {
     console.error('Failed to get menu items:', error);
     throw new Error('Database query failed: menuItems', { cause: error });
@@ -43,6 +43,7 @@ export async function getMenuItems(categoryId?: number) {
 }
 
 export async function createMenuItem(data: {
+  restaurantId: number;
   categoryId?: number;
   name: string;
   description?: string;
@@ -54,6 +55,10 @@ export async function createMenuItem(data: {
   optionsJson?: string;
 }) {
   try {
+    if (data.categoryId) {
+      const category = await db.select({ id: categories.id }).from(categories).where(and(eq(categories.id, data.categoryId), eq(categories.restaurantId, data.restaurantId))).limit(1);
+      if (!category[0]) throw new Error('Category not found in this restaurant');
+    }
     const res = await db.insert(menuItems).values(data).returning();
     return res[0];
   } catch (error) {
@@ -62,7 +67,7 @@ export async function createMenuItem(data: {
   }
 }
 
-export async function updateMenuItem(id: number, data: Partial<{
+export async function updateMenuItem(restaurantId: number, id: number, data: Partial<{
   categoryId: number;
   name: string;
   description: string;
@@ -75,7 +80,11 @@ export async function updateMenuItem(id: number, data: Partial<{
   optionsJson: string;
 }>) {
   try {
-    const res = await db.update(menuItems).set(data).where(eq(menuItems.id, id)).returning();
+    if (data.categoryId) {
+      const category = await db.select({ id: categories.id }).from(categories).where(and(eq(categories.id, data.categoryId), eq(categories.restaurantId, restaurantId))).limit(1);
+      if (!category[0]) throw new Error('Category not found in this restaurant');
+    }
+    const res = await db.update(menuItems).set(data).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId))).returning();
     return res[0];
   } catch (error) {
     console.error('Failed to update menu item:', error);
@@ -83,9 +92,9 @@ export async function updateMenuItem(id: number, data: Partial<{
   }
 }
 
-export async function deleteMenuItem(id: number) {
+export async function deleteMenuItem(restaurantId: number, id: number) {
   try {
-    await db.delete(menuItems).where(eq(menuItems.id, id));
+    await db.delete(menuItems).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId)));
     return { success: true };
   } catch (error) {
     console.error('Failed to delete menu item:', error);
@@ -94,21 +103,21 @@ export async function deleteMenuItem(id: number) {
 }
 
 // Tables
-export async function getTables() {
+export async function getTables(locationId: number) {
   try {
-    return await db.select().from(restaurantTables).orderBy(restaurantTables.tableNumber);
+    return await db.select().from(restaurantTables).where(eq(restaurantTables.locationId, locationId)).orderBy(restaurantTables.tableNumber);
   } catch (error) {
     console.error('Failed to get tables:', error);
     throw new Error('Database query failed: tables', { cause: error });
   }
 }
 
-export async function updateTableStatus(id: number, status: string, currentOrderId?: number | null) {
+export async function updateTableStatus(locationId: number, id: number, status: string, currentOrderId?: number | null) {
   try {
     const res = await db.update(restaurantTables).set({
       status,
       ...(currentOrderId !== undefined ? { currentOrderId } : {})
-    }).where(eq(restaurantTables.id, id)).returning();
+    }).where(and(eq(restaurantTables.id, id), eq(restaurantTables.locationId, locationId))).returning();
     return res[0];
   } catch (error) {
     console.error('Failed to update table status:', error);
@@ -116,10 +125,10 @@ export async function updateTableStatus(id: number, status: string, currentOrder
   }
 }
 
-export async function createTable(tableNumber: string, capacity: number, section: string, posX = 0, posY = 0) {
+export async function createTable(locationId: number, tableNumber: string, capacity: number, section: string, posX = 0, posY = 0) {
   try {
     const res = await db.insert(restaurantTables).values({
-      tableNumber,
+      locationId, tableNumber,
       capacity,
       section,
       posX,
@@ -134,9 +143,10 @@ export async function createTable(tableNumber: string, capacity: number, section
 }
 
 // Orders
-export async function getOrders(statusFilter?: string) {
+export async function getOrders(restaurantId: number, statusFilter?: string) {
   try {
     const allOrders = await db.query.orders.findMany({
+      where: eq(orders.restaurantId, restaurantId),
       orderBy: [desc(orders.createdAt)],
       with: {
         table: true,
@@ -158,10 +168,10 @@ export async function getOrders(statusFilter?: string) {
   }
 }
 
-export async function getOrderById(id: number) {
+export async function getOrderById(restaurantId: number, id: number) {
   try {
     return await db.query.orders.findFirst({
-      where: eq(orders.id, id),
+      where: and(eq(orders.id, id), eq(orders.restaurantId, restaurantId)),
       with: {
         table: true,
         items: true,
@@ -175,6 +185,8 @@ export async function getOrderById(id: number) {
 }
 
 export async function createOrder(data: {
+  restaurantId: number;
+  locationId: number;
   orderNumber: string;
   orderType: string;
   tableId?: number | null;
@@ -188,6 +200,7 @@ export async function createOrder(data: {
   total: number;
   notes?: string;
   guestCount?: number;
+  createdByStaffId?: number;
   items: Array<{
     menuItemId?: number;
     name: string;
@@ -198,12 +211,19 @@ export async function createOrder(data: {
   }>;
 }) {
   try {
+    if (data.tableId) {
+      const table = await db.select({ id: restaurantTables.id }).from(restaurantTables).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId))).limit(1);
+      if (!table[0]) throw new Error('Table not found in this location');
+    }
     // 1. Create order record
     const createdOrderArr = await db.insert(orders).values({
       orderNumber: data.orderNumber,
+      restaurantId: data.restaurantId,
+      locationId: data.locationId,
       orderType: data.orderType,
       tableId: data.tableId || null,
       serverName: data.serverName || 'Staff Member',
+      createdByStaffId: data.createdByStaffId,
       customerName: data.customerName || null,
       customerPhone: data.customerPhone || null,
       status: 'active',
@@ -240,24 +260,24 @@ export async function createOrder(data: {
       await db.update(restaurantTables).set({
         status: 'occupied',
         currentOrderId: createdOrder.id,
-      }).where(eq(restaurantTables.id, data.tableId));
+      }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));
     }
 
-    return await getOrderById(createdOrder.id);
+    return await getOrderById(data.restaurantId, createdOrder.id);
   } catch (error) {
     console.error('Failed to create order:', error);
     throw new Error('Database query failed: createOrder', { cause: error });
   }
 }
 
-export async function updateOrderStatus(orderId: number, status: string) {
+export async function updateOrderStatus(restaurantId: number, orderId: number, status: string) {
   try {
     const updateData: any = { status };
     if (status === 'completed' || status === 'cancelled') {
       updateData.completedAt = new Date();
     }
 
-    const res = await db.update(orders).set(updateData).where(eq(orders.id, orderId)).returning();
+    const res = await db.update(orders).set(updateData).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId))).returning();
     const updated = res[0];
 
     // If completed or cancelled, free the table
@@ -268,15 +288,17 @@ export async function updateOrderStatus(orderId: number, status: string) {
       }).where(eq(restaurantTables.id, updated.tableId));
     }
 
-    return await getOrderById(orderId);
+    return await getOrderById(restaurantId, orderId);
   } catch (error) {
     console.error('Failed to update order status:', error);
     throw new Error('Database query failed: updateOrderStatus', { cause: error });
   }
 }
 
-export async function updateOrderItemStatus(itemId: number, itemStatus: string) {
+export async function updateOrderItemStatus(restaurantId: number, itemId: number, itemStatus: string) {
   try {
+    const owned = await db.select({ id: orderItems.id }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(and(eq(orderItems.id, itemId), eq(orders.restaurantId, restaurantId))).limit(1);
+    if (!owned[0]) return undefined;
     const res = await db.update(orderItems).set({ itemStatus }).where(eq(orderItems.id, itemId)).returning();
     return res[0];
   } catch (error) {
@@ -285,14 +307,17 @@ export async function updateOrderItemStatus(itemId: number, itemStatus: string) 
   }
 }
 
-export async function processPayment(orderId: number, data: {
+export async function processPayment(restaurantId: number, orderId: number, data: {
   amount: number;
   tip?: number;
   method: string;
   processedBy?: string;
+  processedByStaffId?: number;
   transactionRef?: string;
 }) {
   try {
+    const ownedOrder = await getOrderById(restaurantId, orderId);
+    if (!ownedOrder) throw new Error('Order not found');
     // 1. Record payment
     await db.insert(payments).values({
       orderId,
@@ -300,6 +325,7 @@ export async function processPayment(orderId: number, data: {
       tip: data.tip || 0,
       method: data.method,
       processedBy: data.processedBy || 'Cashier',
+      processedByStaffId: data.processedByStaffId,
       transactionRef: data.transactionRef || `TXN-${Date.now()}`,
       status: 'success',
     });
@@ -311,7 +337,7 @@ export async function processPayment(orderId: number, data: {
       status: 'completed',
       tip: data.tip || 0,
       completedAt: new Date(),
-    }).where(eq(orders.id, orderId)).returning();
+    }).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId))).returning();
 
     const order = updatedOrder[0];
     if (order && order.tableId) {
@@ -321,18 +347,18 @@ export async function processPayment(orderId: number, data: {
       }).where(eq(restaurantTables.id, order.tableId));
     }
 
-    return await getOrderById(orderId);
+    return await getOrderById(restaurantId, orderId);
   } catch (error) {
     console.error('Failed to process payment:', error);
     throw new Error('Database query failed: processPayment', { cause: error });
   }
 }
 
-export async function getAnalyticsSummary() {
+export async function getAnalyticsSummary(restaurantId: number) {
   try {
-    const allOrders = await db.select().from(orders);
-    const allItems = await db.select().from(orderItems);
-    const allPayments = await db.select().from(payments);
+    const allOrders = await db.select().from(orders).where(eq(orders.restaurantId, restaurantId));
+    const allItems = await db.select({ name: orderItems.name, quantity: orderItems.quantity, price: orderItems.price }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(eq(orders.restaurantId, restaurantId));
+    const allPayments = await db.select({ method: payments.method, amount: payments.amount }).from(payments).innerJoin(orders, eq(orders.id, payments.orderId)).where(eq(orders.restaurantId, restaurantId));
 
     const paidOrders = allOrders.filter(o => o.paymentStatus === 'paid');
     const totalRevenueCents = paidOrders.reduce((sum, o) => sum + (o.total || 0), 0);

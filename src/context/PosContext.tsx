@@ -92,7 +92,7 @@ export const TAX_RATE = 0.0825; // 8.25% sales tax standard
 
 export function PosProvider({ children }: { children: ReactNode }) {
   const { currentUser } = useAuth();
-  const [activeView, setActiveView] = useState<ActiveView>('register');
+  const [activeView, setActiveView] = useState<ActiveView>(currentUser?.role === 'kitchen' ? 'kds' : currentUser?.role === 'accountant' ? 'reports' : 'register');
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [tables, setTables] = useState<RestaurantTable[]>([]);

@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from './index.ts';
-import { users } from './schema.ts';
+import { staffSessions, users } from './schema.ts';
 
 export async function getOrCreateUser(clerkUserId: string, email: string, name?: string, defaultRole: string = 'cashier') {
   try {
@@ -51,7 +51,12 @@ export async function getUserByClerkId(clerkUserId: string) {
   return result[0] ?? null;
 }
 
-export async function getAllUsers() {
+export async function getUserById(id: number) {
+  const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return result[0] ?? null;
+}
+
+export async function getAllUsers(restaurantId: number, locationId: number) {
   try {
     return await db.select({
       id: users.id,
@@ -59,10 +64,28 @@ export async function getAllUsers() {
       email: users.email,
       name: users.name,
       role: users.role,
+      isActive: users.isActive,
       createdAt: users.createdAt,
-    }).from(users);
+    }).from(users).where(and(eq(users.restaurantId, restaurantId), eq(users.locationId, locationId)));
   } catch (error) {
     console.error('Database query failed in getAllUsers:', error);
     throw new Error('Failed to fetch staff users', { cause: error });
   }
+}
+
+export async function setUserActive(id: number, isActive: boolean) {
+  // neon-http does not support Drizzle transactions. Change the account state
+  // first so authorization fails immediately, even if session cleanup fails.
+  const updated = (await db.update(users).set({ isActive, updatedAt: new Date() }).where(eq(users.id, id)).returning())[0] ?? null;
+  if (updated && !isActive) {
+    await db.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, id));
+  }
+  return updated;
+}
+
+export async function permanentlyDeleteUser(id: number) {
+  // Remove ephemeral sessions before the profile. Historical business records
+  // still protect referenced profiles through their foreign keys.
+  await db.delete(staffSessions).where(eq(staffSessions.staffId, id));
+  return (await db.delete(users).where(eq(users.id, id)).returning())[0] ?? null;
 }

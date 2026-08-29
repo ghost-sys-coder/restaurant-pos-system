@@ -18,3 +18,7 @@ View your app in AI Studio: https://ai.studio/apps/e9c9ab1c-21de-4b76-84b8-a816a
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Database migrations
+
+Generate schema migrations with `npm run db:generate` and apply committed migrations with `npm run db:migrate`. Apply migrations before deploying a build that includes terminal and PIN access.

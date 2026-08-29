@@ -63,8 +63,14 @@
 
 ### 9. Staff & Authentication
 
-- **Clerk authentication** with server-side user sync
-- **Clerk-managed staff identities** with server-enforced roles
+- **Clerk administrator authentication** for secure terminal enrollment and remote account access
+- **Enrolled shared terminals** with revocable, hashed device credentials
+- **PIN-based staff profiles** with fast lock and profile switching
+- **Server-enforced permissions**, inactivity locking, attempt throttling, and audit events
+- **PIN-only floor staff** do not require personal email or Google accounts
+- **Clerk Organizations** isolate restaurant clients and support owner/admin invitations
+- **Platform owner console** creates client organizations and sends the first owner invitation
+- **Business-aligned roles** for restaurant owners, administrators, managers, accounting, service, bar, host, cashier, and kitchen teams
 - **Role-based Profiles**: Admin, Manager, Cashier, Waiter, Kitchen
 - **Demo Staff Presets** for quick terminal access
 

@@ -1,0 +1,161 @@
+import { and, eq, gt, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { db } from './index.ts';
+import { auditEvents, restaurants, staffSessions, terminals, users } from './schema.ts';
+import { hashPin, hashToken, newOpaqueToken, verifyPin } from '../auth/security.ts';
+
+export async function ensureAccountForStaff(staffId: number) {
+  const staff = await db.select().from(users).where(eq(users.id, staffId)).limit(1);
+  if (!staff[0]) throw new Error('Staff profile not found');
+  if (staff[0].restaurantId && staff[0].locationId) return staff[0];
+  throw new Error('Staff profile is not attached to a restaurant organization');
+}
+
+export async function enrollTerminal(staffId: number, name: string, type = 'register') {
+  const staff = await ensureAccountForStaff(staffId);
+  if (!staff.restaurantId || !staff.locationId) throw new Error('Restaurant account is incomplete');
+  const rawToken = newOpaqueToken();
+  const terminal = (await db.insert(terminals).values({
+    restaurantId: staff.restaurantId,
+    locationId: staff.locationId,
+    name,
+    type,
+    credentialHash: hashToken(rawToken),
+    enrolledByStaffId: staff.id,
+  }).returning())[0];
+  await writeAudit({ terminal, actorStaffId: staff.id, action: 'terminal.enrolled', entityType: 'terminal', entityId: String(terminal.id) });
+  return { terminal, rawToken };
+}
+
+export async function findTerminalByToken(rawToken?: string) {
+  if (!rawToken) return null;
+  const result = await db.select({ terminal: terminals }).from(terminals).innerJoin(restaurants, eq(restaurants.id, terminals.restaurantId)).where(and(
+    eq(terminals.credentialHash, hashToken(rawToken)),
+    eq(terminals.isActive, true),
+    isNull(terminals.revokedAt),
+    eq(restaurants.status, 'active'),
+  )).limit(1);
+  return result[0]?.terminal ?? null;
+}
+
+export async function listTerminalStaff(terminalId: number) {
+  const terminal = await db.select().from(terminals).where(eq(terminals.id, terminalId)).limit(1);
+  if (!terminal[0]) return [];
+  return db.select({ id: users.id, name: users.name, role: users.role })
+    .from(users)
+    .where(and(
+      eq(users.restaurantId, terminal[0].restaurantId),
+      eq(users.locationId, terminal[0].locationId),
+      eq(users.isActive, true),
+      isNotNull(users.pinHash),
+    ));
+}
+
+export async function authenticatePin(terminalId: number, staffId: number, pin: string) {
+  const terminal = (await db.select().from(terminals).where(eq(terminals.id, terminalId)).limit(1))[0];
+  if (!terminal) return { ok: false as const, reason: 'invalid' };
+  if (terminal.lockedUntil && terminal.lockedUntil > new Date()) return { ok: false as const, reason: 'locked' };
+
+  const staff = (await db.select().from(users).where(and(
+    eq(users.id, staffId),
+    eq(users.restaurantId, terminal.restaurantId),
+    eq(users.locationId, terminal.locationId),
+    eq(users.isActive, true),
+  )).limit(1))[0];
+
+  const valid = Boolean(staff?.pinHash) && await verifyPin(pin, staff!.pinHash!);
+  if (!valid) {
+    const attempts = terminal.failedPinAttempts + 1;
+    await db.update(terminals).set({
+      failedPinAttempts: attempts >= 5 ? 0 : attempts,
+      lockedUntil: attempts >= 5 ? new Date(Date.now() + 60_000) : null,
+    }).where(eq(terminals.id, terminal.id));
+    return { ok: false as const, reason: attempts >= 5 ? 'locked' : 'invalid' };
+  }
+
+  await db.update(terminals).set({ failedPinAttempts: 0, lockedUntil: null, lastSeenAt: new Date() }).where(eq(terminals.id, terminal.id));
+  const rawToken = newOpaqueToken();
+  const expiresAt = new Date(Date.now() + terminal.inactivityTimeoutMinutes * 60_000);
+  const session = (await db.insert(staffSessions).values({
+    tokenHash: hashToken(rawToken), terminalId: terminal.id, staffId: staff.id, expiresAt,
+  }).returning())[0];
+  await writeAudit({ terminal, actorStaffId: staff.id, action: 'staff.signed_in', entityType: 'staff_session', entityId: String(session.id) });
+  return { ok: true as const, rawToken, staff, expiresAt };
+}
+
+export async function findStaffSession(rawToken: string | undefined, terminalId: number) {
+  if (!rawToken) return null;
+  const rows = await db.select({ session: staffSessions, staff: users }).from(staffSessions)
+    .innerJoin(users, eq(users.id, staffSessions.staffId))
+    .where(and(
+      eq(staffSessions.tokenHash, hashToken(rawToken)),
+      eq(staffSessions.terminalId, terminalId),
+      isNull(staffSessions.revokedAt),
+      gt(staffSessions.expiresAt, new Date()),
+      eq(users.isActive, true),
+    )).limit(1);
+  if (!rows[0]) return null;
+  const expiresAt = new Date(Date.now() + 15 * 60_000);
+  await db.update(staffSessions).set({ lastActivityAt: new Date(), expiresAt }).where(eq(staffSessions.id, rows[0].session.id));
+  return { ...rows[0], expiresAt };
+}
+
+export async function revokeStaffSession(rawToken?: string) {
+  if (!rawToken) return;
+  await db.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.tokenHash, hashToken(rawToken)));
+}
+
+export async function revokeTerminal(terminalId: number) {
+  await db.update(staffSessions).set({ revokedAt: new Date() }).where(and(eq(staffSessions.terminalId, terminalId), isNull(staffSessions.revokedAt)));
+  return (await db.update(terminals).set({ isActive: false, revokedAt: new Date() }).where(eq(terminals.id, terminalId)).returning())[0] ?? null;
+}
+
+export async function setStaffPin(staffId: number, pin: string) {
+  const target = (await db.select().from(users).where(eq(users.id, staffId)).limit(1))[0];
+  if (!target) return null;
+  await assertUniqueLocationPin(target.locationId, pin, staffId);
+  const pinHash = await hashPin(pin);
+  const updated = await db.update(users).set({
+    pinHash,
+    pinVersion: sql`${users.pinVersion} + 1`,
+    updatedAt: new Date(),
+  }).where(eq(users.id, staffId)).returning();
+  return updated[0] ?? null;
+}
+
+export async function createPinStaff(input: { restaurantId: number; locationId: number; name: string; role: string; pin: string }) {
+  await assertUniqueLocationPin(input.locationId, input.pin);
+  const pinHash = await hashPin(input.pin);
+  return (await db.insert(users).values({ ...input, pinHash, email: null, clerkUserId: null }).returning())[0];
+}
+
+async function assertUniqueLocationPin(locationId: number | null, pin: string, exceptStaffId?: number) {
+  if (!locationId) return;
+  const conditions = [eq(users.locationId, locationId), eq(users.isActive, true)];
+  if (exceptStaffId) conditions.push(ne(users.id, exceptStaffId));
+  const candidates = await db.select({ pinHash: users.pinHash }).from(users).where(and(...conditions));
+  for (const candidate of candidates) {
+    if (candidate.pinHash && await verifyPin(pin, candidate.pinHash)) throw new Error('That PIN is already assigned at this location');
+  }
+}
+
+export async function writeAudit(input: {
+  terminal: typeof terminals.$inferSelect;
+  actorStaffId?: number;
+  approverStaffId?: number;
+  action: string;
+  entityType?: string;
+  entityId?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  await db.insert(auditEvents).values({
+    restaurantId: input.terminal.restaurantId,
+    locationId: input.terminal.locationId,
+    terminalId: input.terminal.id,
+    actorStaffId: input.actorStaffId,
+    approverStaffId: input.approverStaffId,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    metadata: input.metadata,
+  });
+}
