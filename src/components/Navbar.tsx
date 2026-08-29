@@ -18,6 +18,8 @@ import {
   ChevronDown,
   ShieldCheck,
   Settings,
+  Power,
+  LoaderCircle,
 } from 'lucide-react';
 import { ActiveView } from '../types.ts';
 import { Badge } from '@/components/ui/badge';
@@ -26,12 +28,13 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 export default function Navbar() {
   const { activeView, setActiveView, orders, tables } = usePos();
-  const { currentUser, lockTerminal, permissions, platformRole, setWorkspace } = useAuth();
+  const { currentUser, lockTerminal, signOut, permissions, platformRole, setWorkspace } = useAuth();
   const { user } = useUser();
   const [timeStr, setTimeStr] = useState<string>('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [profileDropdownOpen, setProfileDropdownOpen] = useState<boolean>(false);
   const [staffManagerOpen, setStaffManagerOpen] = useState<boolean>(false);
+  const [signingOut, setSigningOut] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -101,6 +104,12 @@ export default function Navbar() {
 
   const displayName = currentUser?.name || user?.fullName || currentUser?.email?.split('@')[0] || user?.firstName || 'Staff';
   const roleName = (currentUser?.role || (user?.publicMetadata?.role as string) || (user?.unsafeMetadata?.role as string) || 'cashier').toLowerCase();
+  const canSignOutBackOffice = currentUser?.role === 'restaurant_owner' || currentUser?.role === 'restaurant_admin';
+  const handleSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true); setProfileDropdownOpen(false); setMobileMenuOpen(false);
+    try { await signOut(); } finally { setSigningOut(false); }
+  };
 
   return (
     <header
@@ -251,6 +260,7 @@ export default function Navbar() {
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Lock &amp; Switch User</span>
               </button>
+              {canSignOutBackOffice && <button id="dropdown-clerk-signout" disabled={signingOut} onClick={handleSignOut} className="mt-1 w-full flex items-center gap-2 border-t border-slate-100 px-2.5 pt-2 pb-1.5 rounded-b-lg text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 transition cursor-pointer"><Power className="w-3.5 h-3.5 text-slate-500" /><span>{signingOut ? 'Signing out…' : 'Sign out of account'}</span></button>}
             </div>
           )}
         </div>
@@ -318,6 +328,7 @@ export default function Navbar() {
               <LogOut className="w-4 h-4" />
               <span>Lock &amp; Switch User</span>
             </button>
+            {canSignOutBackOffice && <button disabled={signingOut} onClick={handleSignOut} className="mt-1 w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 transition cursor-pointer">{signingOut ? <LoaderCircle className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />}<span>{signingOut ? 'Signing out…' : 'Sign out of account'}</span></button>}
           </div>
         </div>
       )}

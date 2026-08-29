@@ -105,7 +105,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const lockTerminal = async () => { await apiJson('/api/access/lock', { method: 'POST' }); setCurrentUser(null); setPermissions([]); };
-  const signOut = async () => { if (terminal) await lockTerminal(); await clerkSignOut(); };
+  const signOut = async () => {
+    try { await apiJson('/api/access/signout', { method: 'POST' }); }
+    finally {
+      setCurrentUser(null); setPermissions([]); setProfiles([]); setPlatformRole(null);
+      localStorage.removeItem('vc_workspace');
+      await clerkSignOut();
+    }
+  };
   const syncUser = async () => currentUser;
 
   useEffect(() => {

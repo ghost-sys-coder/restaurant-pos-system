@@ -140,6 +140,10 @@ function AppContent() {
 
   if (user && platformRole && workspace === 'platform') return <PlatformClientsScreen />;
 
+  // A retained terminal credential must never expose the PIN roster after an
+  // owner/admin explicitly signs out of Clerk.
+  if (!user) return <AuthPage pathname={pathname} />;
+
   if (terminal && currentUser) {
     return (
       <PosProvider>
@@ -149,10 +153,8 @@ function AppContent() {
   }
 
   if (terminal) return <StaffAccessScreen />;
-  if (user && !orgId) return <OrganizationRequiredScreen />;
-  if (user) return <TerminalSetupScreen />;
-
-  return <AuthPage pathname={pathname} />;
+  if (!orgId) return <OrganizationRequiredScreen />;
+  return <TerminalSetupScreen />;
 }
 
 export default function App() {

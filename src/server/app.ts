@@ -239,6 +239,15 @@ app.post('/api/access/lock', requireTerminal, async (req: AuthRequest, res) => {
   res.json({ success: true });
 });
 
+// Account sign-out ends the staff session but deliberately retains this
+// device's terminal credential. The UI still requires Clerk sign-in before it
+// exposes PIN profiles again.
+app.post('/api/access/signout', async (req: AuthRequest, res) => {
+  await revokeStaffSession(readCookies(req.headers.cookie)[STAFF_COOKIE]);
+  res.setHeader('Set-Cookie', clearCookie(STAFF_COOKIE));
+  res.json({ success: true });
+});
+
 app.get('/api/access/session', requireTerminal, requireStaffSession, (req: AuthRequest, res) => {
   res.json({ staff: publicStaff(req.staff!), permissions: permissionsForRole(req.staff!.role as Role) });
 });

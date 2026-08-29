@@ -803,8 +803,10 @@ async function authorizeTerminal(staffId, name, pin, type = "register") {
   const rawToken = newOpaqueToken();
   return withTransaction(async (transaction) => {
     await transaction.update(users).set({ pinHash, pinVersion: sql3`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(users.id, staff.id));
-    const terminal = (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId, locationId: staff.locationId, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];
-    await transaction.insert(auditEvents).values({ restaurantId: terminal.restaurantId, locationId: terminal.locationId, terminalId: terminal.id, actorStaffId: staff.id, action: "terminal.enrolled", entityType: "terminal", entityId: String(terminal.id) });
+    const existing = (await transaction.select().from(terminals).where(and3(eq3(terminals.locationId, staff.locationId), eq3(terminals.name, name))).limit(1))[0];
+    const terminal = existing ? (await transaction.update(terminals).set({ credentialHash: hashToken(rawToken), type, enrolledByStaffId: staff.id, isActive: true, revokedAt: null, lastSeenAt: /* @__PURE__ */ new Date() }).where(eq3(terminals.id, existing.id)).returning())[0] : (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId, locationId: staff.locationId, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];
+    if (existing) await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(and3(eq3(staffSessions.terminalId, terminal.id), isNull2(staffSessions.revokedAt)));
+    await transaction.insert(auditEvents).values({ restaurantId: terminal.restaurantId, locationId: terminal.locationId, terminalId: terminal.id, actorStaffId: staff.id, action: existing ? "terminal.reauthorized" : "terminal.enrolled", entityType: "terminal", entityId: String(terminal.id) });
     return { terminal, rawToken };
   });
 }
@@ -1305,6 +1307,11 @@ app.post("/api/access/login", requireTerminal, async (req, res) => {
   res.json({ staff: publicStaff(result.staff), permissions: permissionsForRole(result.staff.role) });
 });
 app.post("/api/access/lock", requireTerminal, async (req, res) => {
+  await revokeStaffSession(readCookies(req.headers.cookie)[STAFF_COOKIE]);
+  res.setHeader("Set-Cookie", clearCookie(STAFF_COOKIE));
+  res.json({ success: true });
+});
+app.post("/api/access/signout", async (req, res) => {
   await revokeStaffSession(readCookies(req.headers.cookie)[STAFF_COOKIE]);
   res.setHeader("Set-Cookie", clearCookie(STAFF_COOKIE));
   res.json({ success: true });
