@@ -1,7 +1,7 @@
 import { usePos } from '../context/PosContext.tsx';
 import { RestaurantTable, TableStatus } from '../types.ts';
 import { formatCurrency, getElapsedMinutes } from '../utils/formatters.ts';
-import { Users, Clock, Receipt, CheckCircle, RefreshCw } from 'lucide-react';
+import { Users, Clock, Receipt, CheckCircle, RefreshCw, Pencil } from 'lucide-react';
 
 const STATUS_CONFIG: Record<
   TableStatus,
@@ -49,7 +49,7 @@ const STATUS_CONFIG: Record<
   },
 };
 
-export default function TableCard({ table }: { table: RestaurantTable }) {
+export default function TableCard({ table, onEdit }: { table: RestaurantTable; onEdit: () => void }) {
   const {
     orders,
     setSelectedTableId,
@@ -118,12 +118,12 @@ export default function TableCard({ table }: { table: RestaurantTable }) {
           </div>
 
           {/* Status Badge */}
-          <div
+          <div className="flex items-center gap-1"><button type="button" onClick={onEdit} title="Edit table" aria-label={`Edit table ${table.tableNumber}`} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-indigo-600"><Pencil className="size-3.5" /></button><div
             className={`flex items-center gap-1.5 text-[11px] font-bold px-2 py-0.5 rounded-full border ${cfg.badgeBg} ${cfg.text}`}
           >
             <div className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
             <span>{cfg.label}</span>
-          </div>
+          </div></div>
         </div>
 
         {/* Capacity & Timer */}

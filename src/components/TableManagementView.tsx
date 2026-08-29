@@ -2,11 +2,14 @@ import { useState } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import TableCard from './TableCard.tsx';
 import AddTableModal from './AddTableModal.tsx';
+import EditTableModal from './EditTableModal.tsx';
+import { RestaurantTable } from '../types.ts';
 import { Plus, LayoutGrid, Users, CheckCircle2, Clock, Sparkles } from 'lucide-react';
 
 export default function TableManagementView() {
   const { tables, setAddTableModalOpen } = usePos();
   const [selectedSection, setSelectedSection] = useState<string>('All');
+  const [editingTable, setEditingTable] = useState<RestaurantTable | null>(null);
 
   const sections = ['All', 'Main Dining', 'Patio', 'Bar', 'VIP'];
 
@@ -110,13 +113,14 @@ export default function TableManagementView() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
             {filteredTables.map((table) => (
-              <TableCard key={table.id} table={table} />
+              <TableCard key={table.id} table={table} onEdit={() => setEditingTable(table)} />
             ))}
           </div>
         )}
       </div>
 
       <AddTableModal />
+      {editingTable && <EditTableModal table={editingTable} onClose={() => setEditingTable(null)} />}
     </div>
   );
 }

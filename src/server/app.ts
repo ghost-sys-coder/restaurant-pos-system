@@ -12,6 +12,7 @@ import {
   getTables,
   createTable,
   updateTableStatus,
+  updateTableDetails,
   getOrders,
   getOrderById,
   createOrder,
@@ -540,6 +541,23 @@ app.post('/api/tables', requirePermission('tables.manage'), async (req: AuthRequ
     console.error('Failed to create table:', error);
     const message = error?.cause?.message || error?.message || 'Failed to create table';
     res.status(500).json({ error: message });
+  }
+});
+
+app.put('/api/tables/:id', requirePermission('tables.manage'), async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    const tableNumber = String(req.body.tableNumber || '').trim();
+    const capacity = Number(req.body.capacity);
+    const section = String(req.body.section || '').trim();
+    if (!Number.isInteger(id) || id < 1 || tableNumber.length < 1 || tableNumber.length > 30 || !Number.isInteger(capacity) || capacity < 1 || capacity > 100 || section.length < 2 || section.length > 60) return res.status(400).json({ error: 'Valid table number, capacity, and section are required' });
+    const table = await updateTableDetails(req.terminal!.locationId, id, { tableNumber, capacity, section });
+    if (!table) return res.status(404).json({ error: 'Table not found' });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'table.updated', entityType: 'table', entityId: String(id), metadata: { tableNumber, capacity, section } });
+    res.json(table);
+  } catch (error: any) {
+    const detail = String(error?.cause?.message || error?.message || 'Unable to update table');
+    res.status(detail.toLowerCase().includes('unique') ? 409 : 400).json({ error: detail.toLowerCase().includes('unique') ? 'A table with this number already exists at this location' : detail });
   }
 });
 

@@ -153,6 +153,15 @@ export async function createTable(locationId: number, tableNumber: string, capac
   }
 }
 
+export async function updateTableDetails(locationId: number, id: number, data: { tableNumber: string; capacity: number; section: string }) {
+  try {
+    return (await db.update(restaurantTables).set(data).where(and(eq(restaurantTables.id, id), eq(restaurantTables.locationId, locationId))).returning())[0] ?? null;
+  } catch (error) {
+    console.error('Failed to update table details:', error);
+    throw new Error('Database query failed: updateTableDetails', { cause: error });
+  }
+}
+
 // Orders
 export async function getOrders(restaurantId: number, locationId: number, statusFilter?: string) {
   try {
