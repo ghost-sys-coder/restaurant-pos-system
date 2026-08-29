@@ -114,9 +114,10 @@ export interface Order {
   guestCount: number;
   createdAt: string;
   completedAt: string | null;
+  version: number;
   items?: OrderItem[];
   table?: RestaurantTable | null;
   payments?: Payment[];
 }
 
-export type ActiveView = 'register' | 'tables' | 'kds' | 'orders' | 'reports' | 'menu_manager';
+export type ActiveView = 'register' | 'tables' | 'kds' | 'orders' | 'reports' | 'menu_manager' | 'settings';

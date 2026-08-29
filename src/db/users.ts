@@ -1,10 +1,10 @@
 import { and, eq } from 'drizzle-orm';
-import { db } from './index.ts';
-import { staffSessions, users } from './schema.ts';
+import { db, withTransaction } from './index.ts';
+import { auditEvents, orders, payments, restaurants, staffSessions, users } from './schema.ts';
 
-export async function getOrCreateUser(clerkUserId: string, email: string, name?: string, defaultRole: string = 'cashier') {
+export async function getOrCreateUser(clerkUserId: string, email: string, restaurantId: number, locationId: number, name?: string, defaultRole: string = 'cashier') {
   try {
-    const existing = await getUserByClerkId(clerkUserId);
+    const existing = (await db.select().from(users).where(and(eq(users.clerkUserId, clerkUserId), eq(users.restaurantId, restaurantId))).limit(1))[0];
     if (existing) {
       // Keep existing role from DB, update profile details
       const updated = await db.update(users)
@@ -12,7 +12,7 @@ export async function getOrCreateUser(clerkUserId: string, email: string, name?:
           email,
           ...(name ? { name } : {}),
         })
-        .where(eq(users.clerkUserId, clerkUserId))
+        .where(eq(users.id, existing.id))
         .returning();
       return updated[0];
     }
@@ -20,6 +20,8 @@ export async function getOrCreateUser(clerkUserId: string, email: string, name?:
     const result = await db.insert(users)
       .values({
         clerkUserId,
+        restaurantId,
+        locationId,
         email,
         name: name || email.split('@')[0],
         role: defaultRole,
@@ -51,6 +53,14 @@ export async function getUserByClerkId(clerkUserId: string) {
   return result[0] ?? null;
 }
 
+export async function getUserByClerkOrg(clerkUserId: string, clerkOrganizationId: string) {
+  const result = await db.select({ user: users }).from(users)
+    .innerJoin(restaurants, eq(restaurants.id, users.restaurantId))
+    .where(and(eq(users.clerkUserId, clerkUserId), eq(restaurants.clerkOrganizationId, clerkOrganizationId), eq(users.isActive, true), eq(restaurants.status, 'active')))
+    .limit(1);
+  return result[0]?.user ?? null;
+}
+
 export async function getUserById(id: number) {
   const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
   return result[0] ?? null;
@@ -74,18 +84,22 @@ export async function getAllUsers(restaurantId: number, locationId: number) {
 }
 
 export async function setUserActive(id: number, isActive: boolean) {
-  // neon-http does not support Drizzle transactions. Change the account state
-  // first so authorization fails immediately, even if session cleanup fails.
-  const updated = (await db.update(users).set({ isActive, updatedAt: new Date() }).where(eq(users.id, id)).returning())[0] ?? null;
-  if (updated && !isActive) {
-    await db.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, id));
-  }
-  return updated;
+  return withTransaction(async transaction => {
+    const updated = (await transaction.update(users).set({ isActive, updatedAt: new Date() }).where(eq(users.id, id)).returning())[0] ?? null;
+    if (updated && !isActive) await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, id));
+    return updated;
+  });
 }
 
 export async function permanentlyDeleteUser(id: number) {
-  // Remove ephemeral sessions before the profile. Historical business records
-  // still protect referenced profiles through their foreign keys.
-  await db.delete(staffSessions).where(eq(staffSessions.staffId, id));
-  return (await db.delete(users).where(eq(users.id, id)).returning())[0] ?? null;
+  return withTransaction(async transaction => {
+    const [orderReference, paymentReference, auditReference] = await Promise.all([
+      transaction.select({ id: orders.id }).from(orders).where(eq(orders.createdByStaffId, id)).limit(1),
+      transaction.select({ id: payments.id }).from(payments).where(eq(payments.processedByStaffId, id)).limit(1),
+      transaction.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.actorStaffId, id)).limit(1),
+    ]);
+    if (orderReference[0] || paymentReference[0] || auditReference[0]) throw new Error('STAFF_HAS_BUSINESS_HISTORY');
+    await transaction.delete(staffSessions).where(eq(staffSessions.staffId, id));
+    return (await transaction.delete(users).where(eq(users.id, id)).returning())[0] ?? null;
+  });
 }

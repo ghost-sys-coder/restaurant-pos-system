@@ -1,5 +1,5 @@
-import { and, eq, gt, isNotNull, isNull, ne, sql } from 'drizzle-orm';
-import { db } from './index.ts';
+import { and, desc, eq, gt, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { db, withTransaction } from './index.ts';
 import { auditEvents, restaurants, staffSessions, terminals, users } from './schema.ts';
 import { hashPin, hashToken, newOpaqueToken, verifyPin } from '../auth/security.ts';
 
@@ -24,6 +24,19 @@ export async function enrollTerminal(staffId: number, name: string, type = 'regi
   }).returning())[0];
   await writeAudit({ terminal, actorStaffId: staff.id, action: 'terminal.enrolled', entityType: 'terminal', entityId: String(terminal.id) });
   return { terminal, rawToken };
+}
+
+export async function authorizeTerminal(staffId: number, name: string, pin: string, type = 'register') {
+  const staff = await ensureAccountForStaff(staffId);
+  await assertUniqueLocationPin(staff.locationId, pin, staffId);
+  const pinHash = await hashPin(pin);
+  const rawToken = newOpaqueToken();
+  return withTransaction(async transaction => {
+    await transaction.update(users).set({ pinHash, pinVersion: sql`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: new Date() }).where(eq(users.id, staff.id));
+    const terminal = (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId!, locationId: staff.locationId!, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];
+    await transaction.insert(auditEvents).values({ restaurantId: terminal.restaurantId, locationId: terminal.locationId, terminalId: terminal.id, actorStaffId: staff.id, action: 'terminal.enrolled', entityType: 'terminal', entityId: String(terminal.id) });
+    return { terminal, rawToken };
+  });
 }
 
 export async function findTerminalByToken(rawToken?: string) {
@@ -53,7 +66,6 @@ export async function listTerminalStaff(terminalId: number) {
 export async function authenticatePin(terminalId: number, staffId: number, pin: string) {
   const terminal = (await db.select().from(terminals).where(eq(terminals.id, terminalId)).limit(1))[0];
   if (!terminal) return { ok: false as const, reason: 'invalid' };
-  if (terminal.lockedUntil && terminal.lockedUntil > new Date()) return { ok: false as const, reason: 'locked' };
 
   const staff = (await db.select().from(users).where(and(
     eq(users.id, staffId),
@@ -62,17 +74,20 @@ export async function authenticatePin(terminalId: number, staffId: number, pin: 
     eq(users.isActive, true),
   )).limit(1))[0];
 
+  if (staff?.pinLockedUntil && staff.pinLockedUntil > new Date()) return { ok: false as const, reason: 'locked' };
+
   const valid = Boolean(staff?.pinHash) && await verifyPin(pin, staff!.pinHash!);
   if (!valid) {
-    const attempts = terminal.failedPinAttempts + 1;
-    await db.update(terminals).set({
+    const attempts = (staff?.failedPinAttempts || 0) + 1;
+    if (staff) await db.update(users).set({
       failedPinAttempts: attempts >= 5 ? 0 : attempts,
-      lockedUntil: attempts >= 5 ? new Date(Date.now() + 60_000) : null,
-    }).where(eq(terminals.id, terminal.id));
+      pinLockedUntil: attempts >= 5 ? new Date(Date.now() + 60_000) : null,
+    }).where(eq(users.id, staff.id));
     return { ok: false as const, reason: attempts >= 5 ? 'locked' : 'invalid' };
   }
 
-  await db.update(terminals).set({ failedPinAttempts: 0, lockedUntil: null, lastSeenAt: new Date() }).where(eq(terminals.id, terminal.id));
+  await db.update(users).set({ failedPinAttempts: 0, pinLockedUntil: null }).where(eq(users.id, staff!.id));
+  await db.update(terminals).set({ lastSeenAt: new Date() }).where(eq(terminals.id, terminal.id));
   const rawToken = newOpaqueToken();
   const expiresAt = new Date(Date.now() + terminal.inactivityTimeoutMinutes * 60_000);
   const session = (await db.insert(staffSessions).values({
@@ -94,7 +109,8 @@ export async function findStaffSession(rawToken: string | undefined, terminalId:
       eq(users.isActive, true),
     )).limit(1);
   if (!rows[0]) return null;
-  const expiresAt = new Date(Date.now() + 15 * 60_000);
+  const terminal = (await db.select({ inactivityTimeoutMinutes: terminals.inactivityTimeoutMinutes }).from(terminals).where(eq(terminals.id, terminalId)).limit(1))[0];
+  const expiresAt = new Date(Date.now() + (terminal?.inactivityTimeoutMinutes || 15) * 60_000);
   await db.update(staffSessions).set({ lastActivityAt: new Date(), expiresAt }).where(eq(staffSessions.id, rows[0].session.id));
   return { ...rows[0], expiresAt };
 }
@@ -114,12 +130,11 @@ export async function setStaffPin(staffId: number, pin: string) {
   if (!target) return null;
   await assertUniqueLocationPin(target.locationId, pin, staffId);
   const pinHash = await hashPin(pin);
-  const updated = await db.update(users).set({
-    pinHash,
-    pinVersion: sql`${users.pinVersion} + 1`,
-    updatedAt: new Date(),
-  }).where(eq(users.id, staffId)).returning();
-  return updated[0] ?? null;
+  return withTransaction(async transaction => {
+    const updated = await transaction.update(users).set({ pinHash, pinVersion: sql`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: new Date() }).where(eq(users.id, staffId)).returning();
+    await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(and(eq(staffSessions.staffId, staffId), isNull(staffSessions.revokedAt)));
+    return updated[0] ?? null;
+  });
 }
 
 export async function createPinStaff(input: { restaurantId: number; locationId: number; name: string; role: string; pin: string }) {
@@ -158,4 +173,8 @@ export async function writeAudit(input: {
     entityId: input.entityId,
     metadata: input.metadata,
   });
+}
+
+export async function listAuditEvents(restaurantId: number, locationId: number, limit = 100) {
+  return db.select().from(auditEvents).where(and(eq(auditEvents.restaurantId, restaurantId), eq(auditEvents.locationId, locationId))).orderBy(desc(auditEvents.createdAt)).limit(Math.min(200, Math.max(1, limit)));
 }

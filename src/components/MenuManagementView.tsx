@@ -4,12 +4,15 @@ import MenuItemEditModal from './MenuItemEditModal.tsx';
 import { MenuItem } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
 import { BookOpen, Plus, Edit2, Trash2, Search, Check, AlertCircle } from 'lucide-react';
+import ConfirmDialog from './ConfirmDialog.tsx';
 
 export default function MenuManagementView() {
   const { menuItems, categories, fetchData, showToast } = usePos();
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [isCreating, setIsCreating] = useState<boolean>(false);
   const [search, setSearch] = useState<string>('');
+  const [archiveTarget, setArchiveTarget] = useState<MenuItem | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
 
   const filteredItems = menuItems.filter((i) => {
     if (!search.trim()) return true;
@@ -38,18 +41,18 @@ export default function MenuManagementView() {
     }
   };
 
-  const handleDeleteItem = async (itemId: number, name: string) => {
-    if (window.confirm(`Are you sure you want to delete "${name}" from the menu catalog?`)) {
+  const handleDeleteItem = async () => {
+    if (!archiveTarget) return; setArchiveBusy(true);
       try {
-        const res = await fetch(`/api/menu-items/${itemId}`, { method: 'DELETE' });
+        const res = await fetch(`/api/menu-items/${archiveTarget.id}`, { method: 'DELETE' });
         if (res.ok) {
-          showToast(`Deleted ${name}`);
+          showToast(`Archived ${archiveTarget.name}`);
           await fetchData();
+          setArchiveTarget(null);
         }
       } catch (e) {
         console.error(e);
-      }
-    }
+      } finally { setArchiveBusy(false); }
   };
 
   return (
@@ -206,7 +209,7 @@ export default function MenuManagementView() {
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => handleDeleteItem(item.id, item.name)}
+                        onClick={() => setArchiveTarget(item)}
                         className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition cursor-pointer"
                         title="Delete Item"
                       >
@@ -231,6 +234,7 @@ export default function MenuManagementView() {
           }}
         />
       )}
+      <ConfirmDialog open={Boolean(archiveTarget)} title="Archive this menu item?" description={`${archiveTarget?.name || 'This item'} will disappear from the active catalog while remaining attached to historical orders.`} confirmLabel="Archive item" busy={archiveBusy} onCancel={() => setArchiveTarget(null)} onConfirm={handleDeleteItem} />
     </div>
   );
 }

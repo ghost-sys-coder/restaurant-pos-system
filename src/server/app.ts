@@ -13,6 +13,7 @@ import {
   getOrders,
   getOrderById,
   createOrder,
+  replaceOrder,
   updateOrderStatus,
   updateOrderItemStatus,
   processPayment,
@@ -21,11 +22,11 @@ import {
 import { getAllUsers, getUserById, permanentlyDeleteUser, setUserActive, updateUserRole } from '../db/users.ts';
 import { AuthRequest, attachClerkAuth, getPlatformRole, permissionsForRole, requirePermission, requirePlatformRole, requireStaffSession, requireStrictAuth, requireTerminal } from '../middleware/auth.ts';
 import { clerkMiddleware, clerkClient, getAuth } from '@clerk/express';
-import { authenticatePin, createPinStaff, enrollTerminal, listTerminalStaff, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
+import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, listTerminalStaff, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
 import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE, validatePinFormat } from '../auth/security.ts';
 import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
-import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, listRestaurantClients } from '../db/organizations.ts';
+import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, getRestaurantSettings, listRestaurantClients, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -141,6 +142,14 @@ app.post('/api/platform/clients', requireStrictAuth, requirePlatformRole(['platf
   }
 });
 
+app.patch('/api/platform/clients/:id/status', requireStrictAuth, requirePlatformRole(['platform_owner']), async (req: AuthRequest, res) => {
+  const status = String(req.body.status);
+  if (!['active', 'suspended'].includes(status)) return res.status(400).json({ error: 'Invalid client status' });
+  const client = await updateRestaurantStatus(Number(req.params.id), status as 'active' | 'suspended');
+  if (!client) return res.status(404).json({ error: 'Restaurant client not found' });
+  res.json(client);
+});
+
 app.post('/api/organization/invitations', requireStrictAuth, requireTerminal, requireStaffSession, async (req: AuthRequest, res) => {
   try {
     const { userId, orgId, orgRole } = getAuth(req);
@@ -170,8 +179,7 @@ app.post('/api/access/terminal/enroll', requireStrictAuth, async (req: AuthReque
     const pin = String(req.body.pin || '');
     if (name.length < 2 || name.length > 60) return res.status(400).json({ error: 'Terminal name must contain 2 to 60 characters' });
     if (!validatePinFormat(pin)) return res.status(400).json({ error: 'Administrator PIN must contain 4 to 6 digits' });
-    await setStaffPin(clerkStaff.id, pin);
-    const { terminal, rawToken } = await enrollTerminal(clerkStaff.id, name, String(req.body.type || 'register'));
+    const { terminal, rawToken } = await authorizeTerminal(clerkStaff.id, name, pin, String(req.body.type || 'register'));
     res.setHeader('Set-Cookie', sessionCookie(TERMINAL_COOKIE, rawToken, 60 * 60 * 24 * 90));
     res.status(201).json({ terminal: publicTerminal(terminal) });
   } catch (error: any) {
@@ -215,6 +223,35 @@ app.get('/api/access/session', requireTerminal, requireStaffSession, (req: AuthR
 app.use('/api', requireTerminal, requireStaffSession);
 app.use('/api/staff', requirePermission('staff.manage'));
 app.use('/api/analytics', requirePermission('reports.view'));
+
+app.get('/api/config', async (req: AuthRequest, res) => {
+  const settings = await getRestaurantSettings(req.terminal!.restaurantId, req.terminal!.locationId);
+  if (!settings) return res.status(404).json({ error: 'Restaurant configuration not found' });
+  res.json({ receiptName: settings.restaurant.receiptName || settings.restaurant.name, currency: settings.restaurant.currency, taxRateBps: settings.restaurant.taxRateBps, timezone: settings.location.timezone });
+});
+
+app.get('/api/settings', requirePermission('staff.manage'), async (req: AuthRequest, res) => {
+  const settings = await getRestaurantSettings(req.terminal!.restaurantId, req.terminal!.locationId);
+  if (!settings) return res.status(404).json({ error: 'Restaurant settings not found' });
+  res.json({ receiptName: settings.restaurant.receiptName || settings.restaurant.name, currency: settings.restaurant.currency, taxRateBps: settings.restaurant.taxRateBps, timezone: settings.location.timezone, inactivityTimeoutMinutes: req.terminal!.inactivityTimeoutMinutes });
+});
+
+app.put('/api/settings', requirePermission('staff.manage'), async (req: AuthRequest, res) => {
+  const receiptName = String(req.body.receiptName || '').trim();
+  const currency = String(req.body.currency || '').trim().toUpperCase();
+  const timezone = String(req.body.timezone || '').trim();
+  const taxRateBps = Number(req.body.taxRateBps);
+  const inactivityTimeoutMinutes = Number(req.body.inactivityTimeoutMinutes);
+  if (receiptName.length < 2 || !/^[A-Z]{3}$/.test(currency) || !Number.isInteger(taxRateBps) || taxRateBps < 0 || taxRateBps > 10_000 || !Number.isInteger(inactivityTimeoutMinutes) || inactivityTimeoutMinutes < 1 || inactivityTimeoutMinutes > 240) return res.status(400).json({ error: 'Invalid restaurant settings' });
+  try { Intl.DateTimeFormat('en', { timeZone: timezone }); } catch { return res.status(400).json({ error: 'Invalid IANA timezone' }); }
+  const updated = await updateRestaurantSettings(req.terminal!.restaurantId, req.terminal!.locationId, req.terminal!.id, { receiptName, currency, timezone, taxRateBps, inactivityTimeoutMinutes });
+  await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'settings.updated', entityType: 'restaurant', entityId: String(req.terminal!.restaurantId) });
+  res.json(updated);
+});
+
+app.get('/api/audit', requirePermission('reports.view'), async (req: AuthRequest, res) => {
+  res.json(await listAuditEvents(req.terminal!.restaurantId, req.terminal!.locationId, Number(req.query.limit) || 100));
+});
 
 app.delete('/api/access/terminal', requirePermission('terminals.manage'), async (req: AuthRequest, res) => {
   await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'terminal.revoked', entityType: 'terminal', entityId: String(req.terminal!.id) });
@@ -279,6 +316,12 @@ app.patch('/api/staff/:id/access', async (req: AuthRequest, res) => {
     const target = await getUserById(id);
     if (!target || target.restaurantId !== req.terminal!.restaurantId || target.locationId !== req.terminal!.locationId) return res.status(404).json({ error: 'Staff profile not found' });
     if (target.id === req.staff!.id && !isActive) return res.status(400).json({ error: 'You cannot revoke your own active session' });
+    if (target.clerkUserId) {
+      if (isActive) return res.status(400).json({ error: 'Re-invite this back-office user through Clerk to restore access' });
+      const { orgId } = getAuth(req);
+      if (!orgId) return res.status(400).json({ error: 'Select the restaurant organization first' });
+      await clerkClient.organizations.deleteOrganizationMembership({ organizationId: orgId, userId: target.clerkUserId });
+    }
     const updated = await setUserActive(id, isActive);
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: isActive ? 'staff.access_restored' : 'staff.access_revoked', entityType: 'staff', entityId: String(id) });
     res.json(publicStaff(updated!));
@@ -299,7 +342,7 @@ app.delete('/api/staff/:id', async (req: AuthRequest, res) => {
     res.json({ success: true });
   } catch (error: any) {
     const detail = String(error?.cause?.message || error?.message || '');
-    const referenced = detail.toLowerCase().includes('foreign key');
+    const referenced = detail.includes('STAFF_HAS_BUSINESS_HISTORY') || detail.toLowerCase().includes('foreign key');
     res.status(400).json({ error: referenced ? 'This staff profile has business history and cannot be deleted. Revoke access instead.' : detail || 'Unable to delete staff profile' });
   }
 });
@@ -428,8 +471,10 @@ app.post('/api/tables', requirePermission('tables.manage'), async (req: AuthRequ
 app.patch('/api/tables/:id', requirePermission('tables.manage'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const { status, currentOrderId } = req.body;
-    const table = await updateTableStatus(req.terminal!.locationId, id, status, currentOrderId);
+    const { status } = req.body;
+    if (!['available', 'reserved', 'billing'].includes(String(status))) return res.status(400).json({ error: 'That table state is controlled by the order and payment workflow' });
+    const table = await updateTableStatus(req.terminal!.locationId, id, status);
+    if (!table) return res.status(404).json({ error: 'Table not found' });
     res.json(table);
   } catch (error: any) {
     console.error('Failed to update table:', error);
@@ -442,7 +487,7 @@ app.patch('/api/tables/:id', requirePermission('tables.manage'), async (req: Aut
 app.get('/api/orders', async (req: AuthRequest, res) => {
   try {
     const statusFilter = req.query.status as string | undefined;
-    const ordersList = await getOrders(req.terminal!.restaurantId, statusFilter);
+    const ordersList = await getOrders(req.terminal!.restaurantId, req.terminal!.locationId, statusFilter);
     res.json(ordersList);
   } catch (error: any) {
     console.error('Failed to fetch orders:', error);
@@ -454,7 +499,7 @@ app.get('/api/orders', async (req: AuthRequest, res) => {
 app.get('/api/orders/:id', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const order = await getOrderById(req.terminal!.restaurantId, id);
+    const order = await getOrderById(req.terminal!.restaurantId, req.terminal!.locationId, id);
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
     }
@@ -468,12 +513,30 @@ app.get('/api/orders/:id', async (req: AuthRequest, res) => {
 
 app.post('/api/orders', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   try {
-    const order = await createOrder({ ...req.body, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
-    res.json(order);
+    if (!['dine-in', 'takeout', 'delivery', 'bar'].includes(String(req.body.orderType))) return res.status(400).json({ error: 'Invalid order type' });
+    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply')) return res.status(403).json({ error: 'Manager approval is required to apply a discount' });
+    const order = await createOrder({ orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.created', entityType: 'order', entityId: String(order!.id), metadata: { total: order!.total } });
+    res.status(201).json(order);
   } catch (error: any) {
     console.error('Failed to create order:', error);
     const message = error?.cause?.message || error?.message || 'Failed to create order';
     res.status(500).json({ error: message });
+  }
+});
+
+app.put('/api/orders/:id', requirePermission('orders.write'), async (req: AuthRequest, res) => {
+  try {
+    if (!['dine-in', 'takeout', 'delivery', 'bar'].includes(String(req.body.orderType))) return res.status(400).json({ error: 'Invalid order type' });
+    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply')) return res.status(403).json({ error: 'Manager approval is required to apply a discount' });
+    const expectedVersion = Number(req.body.expectedVersion);
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) return res.status(400).json({ error: 'A valid order version is required' });
+    const order = await replaceOrder({ orderId: Number(req.params.id), expectedVersion, orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.updated', entityType: 'order', entityId: String(order!.id), metadata: { version: order!.version } });
+    res.json(order);
+  } catch (error: any) {
+    const message = error?.cause?.message || error?.message || 'Order update failed';
+    res.status(message.includes('ORDER_CONFLICT') ? 409 : 400).json({ error: message.includes('ORDER_CONFLICT') ? 'This order changed on another terminal. Reload it before saving.' : message });
   }
 });
 
@@ -484,7 +547,8 @@ app.patch('/api/orders/:id/status', requirePermission('orders.write'), async (re
     if (status === 'cancelled' && !['restaurant_owner', 'restaurant_admin', 'general_manager', 'shift_manager'].includes(String((req as AuthRequest).staff?.role))) {
       return res.status(403).json({ error: 'Manager approval required to cancel an order' });
     }
-    const order = await updateOrderStatus(req.terminal!.restaurantId, id, status);
+    const order = await updateOrderStatus(req.terminal!.restaurantId, req.terminal!.locationId, id, status);
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: `order.${status}`, entityType: 'order', entityId: String(id) });
     res.json(order);
   } catch (error: any) {
     console.error('Failed to update order status:', error);
@@ -497,7 +561,8 @@ app.patch('/api/orders/items/:id/status', requirePermission('kitchen.manage'), a
   try {
     const id = Number(req.params.id);
     const { status } = req.body;
-    const item = await updateOrderItemStatus(req.terminal!.restaurantId, id, status);
+    if (!['preparing', 'ready', 'served', 'void'].includes(String(status))) return res.status(400).json({ error: 'Invalid item status' });
+    const item = await updateOrderItemStatus(req.terminal!.restaurantId, req.terminal!.locationId, id, status);
     res.json(item);
   } catch (error: any) {
     console.error('Failed to update item status:', error);
@@ -509,15 +574,18 @@ app.patch('/api/orders/items/:id/status', requirePermission('kitchen.manage'), a
 app.post('/api/orders/:id/pay', requirePermission('payments.process'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const { amount, tip, method, transactionRef } = req.body;
-    const order = await processPayment(req.terminal!.restaurantId, id, {
+    const { amount, tip, method, transactionRef, idempotencyKey, tenderedAmount } = req.body;
+    const order = await processPayment(req.terminal!.restaurantId, req.terminal!.locationId, id, {
       amount,
       tip,
       method,
       processedBy: req.staff?.name || 'Cashier',
       processedByStaffId: req.staff?.id,
       transactionRef,
+      idempotencyKey: String(idempotencyKey || ''),
+      tenderedAmount,
     });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'payment.recorded', entityType: 'order', entityId: String(id), metadata: { amount, method, idempotencyKey } });
     res.json(order);
   } catch (error: any) {
     console.error('Failed to process payment:', error);
@@ -529,7 +597,9 @@ app.post('/api/orders/:id/pay', requirePermission('payments.process'), async (re
 // Analytics
 app.get('/api/analytics', async (req: AuthRequest, res) => {
   try {
-    const analytics = await getAnalyticsSummary(req.terminal!.restaurantId);
+    const startAt = req.query.start ? new Date(String(req.query.start)) : undefined;
+    if (startAt && Number.isNaN(startAt.getTime())) return res.status(400).json({ error: 'Invalid report start date' });
+    const analytics = await getAnalyticsSummary(req.terminal!.restaurantId, req.terminal!.locationId, startAt);
     res.json(analytics);
   } catch (error: any) {
     console.error('Failed to get analytics:', error);

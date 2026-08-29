@@ -12,12 +12,15 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types.ts';
+import ConfirmDialog from './ConfirmDialog.tsx';
 
 export default function OrdersListView() {
   const { orders, setActiveReceiptOrder, setReceiptModalOpen, updateOrderStatus, loadOrderToCart } =
     usePos();
   const [filter, setFilter] = useState<'all' | 'active' | 'completed' | 'cancelled'>('all');
   const [search, setSearch] = useState<string>('');
+  const [voidTarget, setVoidTarget] = useState<Order | null>(null);
+  const [voidBusy, setVoidBusy] = useState(false);
 
   const filteredOrders = orders.filter((o) => {
     if (filter === 'active' && (o.status === 'completed' || o.status === 'cancelled')) return false;
@@ -39,10 +42,9 @@ export default function OrdersListView() {
     setReceiptModalOpen(true);
   };
 
-  const handleVoidOrder = async (orderId: number) => {
-    if (window.confirm('Are you sure you want to void/cancel this order?')) {
-      await updateOrderStatus(orderId, 'cancelled');
-    }
+  const handleVoidOrder = async () => {
+    if (!voidTarget) return; setVoidBusy(true);
+    try { await updateOrderStatus(voidTarget.id, 'cancelled'); setVoidTarget(null); } finally { setVoidBusy(false); }
   };
 
   return (
@@ -234,7 +236,7 @@ export default function OrdersListView() {
                               <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
                             </button>
                             <button
-                              onClick={() => handleVoidOrder(order.id)}
+                              onClick={() => setVoidTarget(order)}
                               className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition cursor-pointer"
                               title="Void / Cancel Order"
                             >
@@ -251,6 +253,7 @@ export default function OrdersListView() {
           </table>
         )}
       </div>
+      <ConfirmDialog open={Boolean(voidTarget)} title="Cancel this order?" description={`Order ${voidTarget?.orderNumber || ''} will be voided and its table released. This action is recorded in the audit trail.`} confirmLabel="Cancel order" busy={voidBusy} onCancel={() => setVoidTarget(null)} onConfirm={handleVoidOrder} />
     </div>
   );
 }

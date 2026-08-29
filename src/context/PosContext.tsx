@@ -9,7 +9,7 @@ import {
   RestaurantTable,
 } from '../types.ts';
 import { playBeep, playKitchenChime, playSuccessChime } from '../utils/sound.ts';
-import { formatCurrency } from '../utils/formatters.ts';
+import { formatCurrency, setCurrency } from '../utils/formatters.ts';
 import { useAuth } from './AuthContext.tsx';
 
 export interface CartItem extends OrderItem {
@@ -53,6 +53,8 @@ interface PosContextType {
   removeCartItem: (cartItemId: string) => void;
   clearCart: () => void;
   loadOrderToCart: (order: Order) => void;
+  checkoutOrder: Order | null;
+  setCheckoutOrder: (order: Order | null) => void;
   // Totals
   subtotal: number;
   tax: number;
@@ -64,7 +66,7 @@ interface PosContextType {
   submitOrder: () => Promise<Order | null>;
   updateOrderStatus: (orderId: number, status: string) => Promise<void>;
   updateOrderItemStatus: (itemId: number, status: string) => Promise<void>;
-  processPayment: (orderId: number, amount: number, method: string, tipAmount?: number) => Promise<Order | null>;
+  processPayment: (orderId: number, amount: number, method: string, tipAmount?: number, tenderedAmount?: number, idempotencyKey?: string) => Promise<Order | null>;
   // Modals & Active Targets
   activeCustomizingItem: MenuItem | null;
   setActiveCustomizingItem: (item: MenuItem | null) => void;
@@ -88,10 +90,8 @@ interface PosContextType {
 
 const PosContext = createContext<PosContextType | undefined>(undefined);
 
-export const TAX_RATE = 0.0825; // 8.25% sales tax standard
-
 export function PosProvider({ children }: { children: ReactNode }) {
-  const { currentUser } = useAuth();
+  const { currentUser, terminal } = useAuth();
   const [activeView, setActiveView] = useState<ActiveView>(currentUser?.role === 'kitchen' ? 'kds' : currentUser?.role === 'accountant' ? 'reports' : 'register');
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -100,6 +100,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [taxRateBps, setTaxRateBps] = useState(0);
 
   // Cart State
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
@@ -112,6 +113,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
   const [discountPercent, setDiscountPercent] = useState<number>(0);
   const [tipPercent, setTipPercent] = useState<number>(0);
   const [customTipCents, setCustomTipCents] = useState<number>(0);
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  const [checkoutOrder, setCheckoutOrder] = useState<Order | null>(null);
 
   // Modals & UI State
   const [activeCustomizingItem, setActiveCustomizingItem] = useState<MenuItem | null>(null);
@@ -124,6 +127,24 @@ export function PosProvider({ children }: { children: ReactNode }) {
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const draftKey = terminal && currentUser ? `vc:draft:${terminal.id}:${currentUser.id}` : null;
+  useEffect(() => {
+    if (!draftKey) return;
+    try {
+      const draft = JSON.parse(localStorage.getItem(draftKey) || 'null');
+      if (!draft) return;
+      setCartItems(Array.isArray(draft.cartItems) ? draft.cartItems : []);
+      setOrderType(draft.orderType || 'dine-in'); setSelectedTableId(draft.selectedTableId ?? null);
+      setGuestCount(draft.guestCount || 1); setCustomerName(draft.customerName || ''); setCustomerPhone(draft.customerPhone || '');
+      setOrderNotes(draft.orderNotes || ''); setDiscountPercent(draft.discountPercent || 0); setEditingOrder(draft.editingOrder || null);
+    } catch { localStorage.removeItem(draftKey); }
+  }, [draftKey]);
+  useEffect(() => {
+    if (!draftKey) return;
+    if (!cartItems.length) { localStorage.removeItem(draftKey); return; }
+    localStorage.setItem(draftKey, JSON.stringify({ cartItems, orderType, selectedTableId, guestCount, customerName, customerPhone, orderNotes, discountPercent, editingOrder }));
+  }, [draftKey, cartItems, orderType, selectedTableId, guestCount, customerName, customerPhone, orderNotes, discountPercent, editingOrder]);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
@@ -131,17 +152,19 @@ export function PosProvider({ children }: { children: ReactNode }) {
 
   const fetchData = async () => {
     try {
-      const [catsRes, itemsRes, tablesRes, ordersRes] = await Promise.all([
+      const [catsRes, itemsRes, tablesRes, ordersRes, configRes] = await Promise.all([
         fetch('/api/categories'),
         fetch('/api/menu-items'),
         fetch('/api/tables'),
         fetch('/api/orders'),
+        fetch('/api/config'),
       ]);
 
       if (catsRes.ok) setCategories(await catsRes.json());
       if (itemsRes.ok) setMenuItems(await itemsRes.json());
       if (tablesRes.ok) setTables(await tablesRes.json());
       if (ordersRes.ok) setOrders(await ordersRes.json());
+      if (configRes.ok) { const config = await configRes.json(); setTaxRateBps(config.taxRateBps || 0); setCurrency(config.currency || 'UGX'); }
     } catch (err) {
       console.error('Failed to load POS data:', err);
     } finally {
@@ -154,8 +177,12 @@ export function PosProvider({ children }: { children: ReactNode }) {
   }, [currentUser]);
 
   useEffect(() => {
-    // Auto-poll orders for KDS and Table updates every 10 seconds
-    const interval = setInterval(async () => {
+    let cancelled = false;
+    let timer = 0;
+    let delay = 10_000;
+    const poll = async () => {
+      if (cancelled) return;
+      if (document.visibilityState === 'hidden') { timer = window.setTimeout(poll, 30_000); return; }
       try {
         const [tablesRes, ordersRes] = await Promise.all([
           fetch('/api/tables'),
@@ -163,19 +190,20 @@ export function PosProvider({ children }: { children: ReactNode }) {
         ]);
         if (tablesRes.ok) setTables(await tablesRes.json());
         if (ordersRes.ok) setOrders(await ordersRes.json());
-      } catch (e) {
-        // ignore background poll error
-      }
-    }, 10000);
-
-    return () => clearInterval(interval);
+        if (!tablesRes.ok || !ordersRes.ok) throw new Error('Background refresh failed');
+        delay = 10_000;
+      } catch { delay = Math.min(delay * 2, 60_000); }
+      timer = window.setTimeout(poll, delay);
+    };
+    timer = window.setTimeout(poll, delay);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, []);
 
   // Cart Totals Calculation
   const subtotal = cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const discount = Math.round((subtotal * discountPercent) / 100);
   const taxableSubtotal = Math.max(0, subtotal - discount);
-  const tax = Math.round(taxableSubtotal * TAX_RATE);
+  const tax = Math.round(taxableSubtotal * taxRateBps / 10_000);
   const tip = customTipCents > 0 ? customTipCents : Math.round((taxableSubtotal * tipPercent) / 100);
   const total = taxableSubtotal + tax + tip;
 
@@ -239,6 +267,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
     setDiscountPercent(0);
     setTipPercent(0);
     setCustomTipCents(0);
+    setEditingOrder(null);
   };
 
   const loadOrderToCart = (order: Order) => {
@@ -261,6 +290,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
         itemStatus: it.itemStatus,
       }))
     );
+    setEditingOrder(order);
     setActiveView('register');
     showToast(`Loaded Order ${order.orderNumber}`);
   };
@@ -269,28 +299,22 @@ export function PosProvider({ children }: { children: ReactNode }) {
     if (cartItems.length === 0) return null;
     setIsSubmitting(true);
     try {
-      const orderNumber = `#${Math.floor(1000 + Math.random() * 9000)}`;
-      const res = await fetch('/api/orders', {
-        method: 'POST',
+      const res = await fetch(editingOrder ? `/api/orders/${editingOrder.id}` : '/api/orders', {
+        method: editingOrder ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          orderNumber,
           orderType,
           tableId: orderType === 'dine-in' ? selectedTableId : null,
           serverName: 'Staff Member',
           customerName: customerName || null,
           customerPhone: customerPhone || null,
-          subtotal,
-          tax,
-          discount,
-          tip,
-          total,
+          discountPercent,
+          tipAmount: tip,
+          expectedVersion: editingOrder?.version,
           notes: orderNotes || null,
           guestCount,
           items: cartItems.map(ci => ({
             menuItemId: ci.menuItemId,
-            name: ci.name,
-            price: ci.price,
             quantity: ci.quantity,
             selectedOptions: ci.selectedOptions || undefined,
             notes: ci.notes || undefined,
@@ -304,7 +328,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
       }
       const createdOrder = await res.json();
       playKitchenChime();
-      showToast(`Order ${createdOrder.orderNumber} sent to Kitchen & KDS!`);
+      showToast(`Order ${createdOrder.orderNumber} ${editingOrder ? 'updated' : 'sent to Kitchen & KDS'}!`);
+      setCheckoutOrder(createdOrder);
       clearCart();
       await fetchData();
       return createdOrder;
@@ -348,7 +373,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const processPayment = async (orderId: number, amount: number, method: string, tipAmount = 0): Promise<Order | null> => {
+  const processPayment = async (orderId: number, amount: number, method: string, tipAmount = 0, tenderedAmount?: number, idempotencyKey = crypto.randomUUID()): Promise<Order | null> => {
     setIsSubmitting(true);
     try {
       const res = await fetch(`/api/orders/${orderId}/pay`, {
@@ -359,6 +384,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
           tip: tipAmount,
           method,
           processedBy: 'Terminal Staff',
+          tenderedAmount,
+          idempotencyKey,
         }),
       });
       if (!res.ok) {
@@ -366,6 +393,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
         throw new Error(errorData.error || 'Payment processing failed');
       }
       const updatedOrder = await res.json();
+      setCheckoutOrder(updatedOrder);
       playSuccessChime();
       showToast(`Payment of ${formatCurrency(amount)} processed successfully!`);
       await fetchData();
@@ -373,7 +401,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
     } catch (err: any) {
       console.error('Payment error:', err);
       showToast('Payment failed: ' + err.message);
-      return null;
+      throw err;
     } finally {
       setIsSubmitting(false);
     }
@@ -416,6 +444,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
         removeCartItem,
         clearCart,
         loadOrderToCart,
+        checkoutOrder,
+        setCheckoutOrder,
         subtotal,
         tax,
         discount,

@@ -14,6 +14,8 @@ interface AuthContextType {
   loading: boolean;
   error: string | null;
   platformRole: PlatformRole | null;
+  workspace: 'platform' | 'restaurant';
+  setWorkspace: (workspace: 'platform' | 'restaurant') => void;
   enrollTerminal: (name: string, pin: string, type?: string) => Promise<void>;
   loginWithPin: (staffId: number, pin: string) => Promise<void>;
   lockTerminal: () => Promise<void>;
@@ -41,8 +43,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [platformRole, setPlatformRole] = useState<PlatformRole | null>(null);
+  const [workspace, setWorkspaceState] = useState<'platform' | 'restaurant'>(() => localStorage.getItem('vc_workspace') === 'restaurant' ? 'restaurant' : 'platform');
+  const setWorkspace = (value: 'platform' | 'restaurant') => { localStorage.setItem('vc_workspace', value); setWorkspaceState(value); };
 
   useEffect(() => setAuthTokenProvider(getToken), [getToken]);
+  useEffect(() => {
+    const handleRequired = (event: Event) => {
+      const code = (event as CustomEvent<string>).detail;
+      if (code === 'TERMINAL_REQUIRED') { setTerminal(null); setProfiles([]); }
+      setCurrentUser(null); setPermissions([]);
+    };
+    window.addEventListener('vc:access-required', handleRequired);
+    return () => window.removeEventListener('vc:access-required', handleRequired);
+  }, []);
 
   const loadTerminal = async () => {
     try {
@@ -104,7 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => { window.clearTimeout(timer); events.forEach(event => window.removeEventListener(event, reset)); };
   }, [terminal, currentUser]);
 
-  return <AuthContext.Provider value={{ currentUser, terminal, profiles, permissions, loading, error, platformRole, enrollTerminal, loginWithPin, lockTerminal, refreshAccess, signOut, syncUser }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ currentUser, terminal, profiles, permissions, loading, error, platformRole, workspace, setWorkspace, enrollTerminal, loginWithPin, lockTerminal, refreshAccess, signOut, syncUser }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

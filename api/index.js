@@ -9,12 +9,14 @@ import "dotenv/config";
 import express from "express";
 
 // src/db/queries.ts
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, sql as sql2, gte, isNull } from "drizzle-orm";
 
 // src/db/index.ts
 import "dotenv/config";
-import { neon } from "@neondatabase/serverless";
+import { neon, neonConfig, Pool } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
+import { drizzle as drizzleWebSocket } from "drizzle-orm/neon-serverless";
+import ws from "ws";
 
 // src/db/schema.ts
 var schema_exports = {};
@@ -46,6 +48,9 @@ var restaurants = pgTable("restaurants", {
   name: text("name").notNull(),
   status: text("status").default("active").notNull(),
   createdByClerkUserId: text("created_by_clerk_user_id"),
+  currency: text("currency").default("UGX").notNull(),
+  taxRateBps: integer("tax_rate_bps").default(0).notNull(),
+  receiptName: text("receipt_name"),
   createdAt: timestamp("created_at").defaultNow().notNull()
 });
 var locations = pgTable("locations", {
@@ -59,20 +64,23 @@ var locations = pgTable("locations", {
 ]);
 var users = pgTable("users", {
   id: serial("id").primaryKey(),
-  restaurantId: integer("restaurant_id").references(() => restaurants.id),
-  locationId: integer("location_id").references(() => locations.id),
-  clerkUserId: text("uid").unique(),
+  restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
+  locationId: integer("location_id").references(() => locations.id).notNull(),
+  clerkUserId: text("uid"),
   email: text("email"),
   name: text("name"),
   role: text("role").default("cashier"),
   // 'admin' | 'manager' | 'cashier' | 'waiter' | 'kitchen'
   pinHash: text("pin_hash"),
   pinVersion: integer("pin_version").default(1).notNull(),
+  failedPinAttempts: integer("failed_pin_attempts").default(0).notNull(),
+  pinLockedUntil: timestamp("pin_locked_until"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull()
 }, (table) => [
-  index("users_restaurant_location_idx").on(table.restaurantId, table.locationId)
+  index("users_restaurant_location_idx").on(table.restaurantId, table.locationId),
+  uniqueIndex("users_clerk_restaurant_unique").on(table.clerkUserId, table.restaurantId)
 ]);
 var terminals = pgTable("terminals", {
   id: serial("id").primaryKey(),
@@ -122,7 +130,7 @@ var auditEvents = pgTable("audit_events", {
 ]);
 var categories = pgTable("categories", {
   id: serial("id").primaryKey(),
-  restaurantId: integer("restaurant_id").references(() => restaurants.id),
+  restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
   name: text("name").notNull(),
   icon: text("icon").default("Utensils"),
   color: text("color").default("amber"),
@@ -131,7 +139,7 @@ var categories = pgTable("categories", {
 });
 var menuItems = pgTable("menu_items", {
   id: serial("id").primaryKey(),
-  restaurantId: integer("restaurant_id").references(() => restaurants.id),
+  restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
   categoryId: integer("category_id").references(() => categories.id),
   name: text("name").notNull(),
   description: text("description"),
@@ -144,11 +152,12 @@ var menuItems = pgTable("menu_items", {
   allergens: text("allergens"),
   optionsJson: text("options_json"),
   // Customization options
-  createdAt: timestamp("created_at").defaultNow()
+  createdAt: timestamp("created_at").defaultNow(),
+  archivedAt: timestamp("archived_at")
 });
 var restaurantTables = pgTable("restaurant_tables", {
   id: serial("id").primaryKey(),
-  locationId: integer("location_id").references(() => locations.id),
+  locationId: integer("location_id").references(() => locations.id).notNull(),
   tableNumber: text("table_number").notNull(),
   capacity: integer("capacity").default(4),
   section: text("section").default("Main Dining"),
@@ -162,8 +171,8 @@ var restaurantTables = pgTable("restaurant_tables", {
 }, (table) => [uniqueIndex("restaurant_tables_location_number_unique").on(table.locationId, table.tableNumber)]);
 var orders = pgTable("orders", {
   id: serial("id").primaryKey(),
-  restaurantId: integer("restaurant_id").references(() => restaurants.id),
-  locationId: integer("location_id").references(() => locations.id),
+  restaurantId: integer("restaurant_id").references(() => restaurants.id).notNull(),
+  locationId: integer("location_id").references(() => locations.id).notNull(),
   orderNumber: text("order_number").notNull(),
   orderType: text("order_type").default("dine-in"),
   // dine-in, takeout, delivery, bar
@@ -185,6 +194,7 @@ var orders = pgTable("orders", {
   // cash, card, digital, split
   notes: text("notes"),
   guestCount: integer("guest_count").default(1),
+  version: integer("version").default(1).notNull(),
   createdAt: timestamp("created_at").defaultNow(),
   completedAt: timestamp("completed_at")
 });
@@ -212,6 +222,8 @@ var payments = pgTable("payments", {
   status: text("status").default("success"),
   processedBy: text("processed_by"),
   processedByStaffId: integer("processed_by_staff_id").references(() => users.id),
+  idempotencyKey: text("idempotency_key").unique(),
+  tenderedAmount: integer("tendered_amount"),
   createdAt: timestamp("created_at").defaultNow()
 });
 var categoriesRelations = relations(categories, ({ many }) => ({
@@ -255,6 +267,49 @@ if (!connectionString) {
 }
 var sql = neon(connectionString);
 var db = drizzle(sql, { schema: schema_exports });
+neonConfig.webSocketConstructor = ws;
+async function withTransaction(work) {
+  const pool = new Pool({ connectionString });
+  const transactionalDb = drizzleWebSocket(pool, { schema: schema_exports });
+  try {
+    return await transactionalDb.transaction(work);
+  } finally {
+    await pool.end();
+  }
+}
+
+// src/domain/posRules.ts
+function clampInteger(value, minimum, maximum) {
+  if (!Number.isFinite(value)) throw new Error("A numeric value is required");
+  return Math.min(maximum, Math.max(minimum, Math.round(value)));
+}
+function calculateOrderTotals(lines, discountPercent, taxRateBps) {
+  const normalizedDiscount = clampInteger(discountPercent, 0, 100);
+  const normalizedTax = clampInteger(taxRateBps, 0, 1e4);
+  const subtotal = lines.reduce((sum, line) => sum + clampInteger(line.price, 0, 1e9) * clampInteger(line.quantity, 1, 99), 0);
+  const discount = Math.round(subtotal * normalizedDiscount / 100);
+  const taxable = Math.max(0, subtotal - discount);
+  const tax = Math.round(taxable * normalizedTax / 1e4);
+  return { subtotal, discount, tax, total: taxable + tax };
+}
+var ORDER_TRANSITIONS = { active: ["preparing", "cancelled"], preparing: ["ready", "cancelled"], ready: ["served", "cancelled"], served: ["completed"] };
+var ITEM_TRANSITIONS = { sent: ["preparing", "void"], preparing: ["ready", "void"], ready: ["served"], served: [], void: [] };
+var TABLE_TRANSITIONS = { available: ["reserved"], reserved: ["available"], occupied: ["billing"], billing: [], cleaning: ["available"] };
+function canTransitionOrder(from, to) {
+  return Boolean(ORDER_TRANSITIONS[from]?.includes(to));
+}
+function canTransitionItem(from, to) {
+  return Boolean(ITEM_TRANSITIONS[from]?.includes(to));
+}
+function canTransitionTable(from, to) {
+  return Boolean(TABLE_TRANSITIONS[from]?.includes(to));
+}
+function paymentState(total, paid) {
+  if (paid <= 0) return "unpaid";
+  if (paid < total) return "partially_paid";
+  if (paid === total) return "paid";
+  throw new Error("Payment exceeds the outstanding balance");
+}
 
 // src/db/queries.ts
 async function getCategories(restaurantId) {
@@ -277,9 +332,9 @@ async function createCategory(restaurantId, name, icon = "Utensils", color = "am
 async function getMenuItems(restaurantId, categoryId) {
   try {
     if (categoryId) {
-      return await db.select().from(menuItems).where(and(eq(menuItems.restaurantId, restaurantId), eq(menuItems.categoryId, categoryId))).orderBy(menuItems.name);
+      return await db.select().from(menuItems).where(and(eq(menuItems.restaurantId, restaurantId), eq(menuItems.categoryId, categoryId), isNull(menuItems.archivedAt))).orderBy(menuItems.name);
     }
-    return await db.select().from(menuItems).where(eq(menuItems.restaurantId, restaurantId)).orderBy(menuItems.name);
+    return await db.select().from(menuItems).where(and(eq(menuItems.restaurantId, restaurantId), isNull(menuItems.archivedAt))).orderBy(menuItems.name);
   } catch (error) {
     console.error("Failed to get menu items:", error);
     throw new Error("Database query failed: menuItems", { cause: error });
@@ -313,7 +368,7 @@ async function updateMenuItem(restaurantId, id, data) {
 }
 async function deleteMenuItem(restaurantId, id) {
   try {
-    await db.delete(menuItems).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId)));
+    await db.update(menuItems).set({ isAvailable: false, archivedAt: /* @__PURE__ */ new Date() }).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId)));
     return { success: true };
   } catch (error) {
     console.error("Failed to delete menu item:", error);
@@ -330,11 +385,12 @@ async function getTables(locationId) {
 }
 async function updateTableStatus(locationId, id, status, currentOrderId) {
   try {
-    const res = await db.update(restaurantTables).set({
-      status,
-      ...currentOrderId !== void 0 ? { currentOrderId } : {}
-    }).where(and(eq(restaurantTables.id, id), eq(restaurantTables.locationId, locationId))).returning();
-    return res[0];
+    return await withTransaction(async (tx) => {
+      const current = (await tx.select().from(restaurantTables).where(and(eq(restaurantTables.id, id), eq(restaurantTables.locationId, locationId))).limit(1))[0];
+      if (!current) return void 0;
+      if (!canTransitionTable(current.status || "", status)) throw new Error(`Table cannot move from ${current.status} to ${status}`);
+      return (await tx.update(restaurantTables).set({ status, ...currentOrderId !== void 0 ? { currentOrderId } : {} }).where(eq(restaurantTables.id, current.id)).returning())[0];
+    });
   } catch (error) {
     console.error("Failed to update table status:", error);
     throw new Error("Database query failed: updateTableStatus", { cause: error });
@@ -357,10 +413,10 @@ async function createTable(locationId, tableNumber, capacity, section, posX = 0,
     throw new Error("Database query failed: createTable", { cause: error });
   }
 }
-async function getOrders(restaurantId, statusFilter) {
+async function getOrders(restaurantId, locationId, statusFilter) {
   try {
     const allOrders = await db.query.orders.findMany({
-      where: eq(orders.restaurantId, restaurantId),
+      where: and(eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId)),
       orderBy: [desc(orders.createdAt)],
       with: {
         table: true,
@@ -380,10 +436,10 @@ async function getOrders(restaurantId, statusFilter) {
     throw new Error("Database query failed: getOrders", { cause: error });
   }
 }
-async function getOrderById(restaurantId, id) {
+async function getOrderById(restaurantId, locationId, id) {
   try {
     return await db.query.orders.findFirst({
-      where: and(eq(orders.id, id), eq(orders.restaurantId, restaurantId)),
+      where: and(eq(orders.id, id), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId)),
       with: {
         table: true,
         items: true,
@@ -397,81 +453,127 @@ async function getOrderById(restaurantId, id) {
 }
 async function createOrder(data) {
   try {
-    if (data.tableId) {
-      const table = await db.select({ id: restaurantTables.id }).from(restaurantTables).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId))).limit(1);
-      if (!table[0]) throw new Error("Table not found in this location");
-    }
-    const createdOrderArr = await db.insert(orders).values({
-      orderNumber: data.orderNumber,
-      restaurantId: data.restaurantId,
-      locationId: data.locationId,
-      orderType: data.orderType,
-      tableId: data.tableId || null,
-      serverName: data.serverName || "Staff Member",
-      createdByStaffId: data.createdByStaffId,
-      customerName: data.customerName || null,
-      customerPhone: data.customerPhone || null,
-      status: "active",
-      subtotal: data.subtotal,
-      tax: data.tax,
-      discount: data.discount,
-      tip: data.tip,
-      total: data.total,
-      paymentStatus: "unpaid",
-      notes: data.notes || null,
-      guestCount: data.guestCount || 1
-    }).returning();
-    const createdOrder = createdOrderArr[0];
-    if (data.items && data.items.length > 0) {
-      await db.insert(orderItems).values(
-        data.items.map((item) => ({
-          orderId: createdOrder.id,
-          menuItemId: item.menuItemId || null,
-          name: item.name,
-          price: item.price,
-          quantity: item.quantity,
-          selectedOptions: item.selectedOptions || null,
-          notes: item.notes || null,
-          itemStatus: "sent"
-        }))
-      );
-    }
-    if (data.tableId) {
-      await db.update(restaurantTables).set({
-        status: "occupied",
-        currentOrderId: createdOrder.id
-      }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));
-    }
-    return await getOrderById(data.restaurantId, createdOrder.id);
+    if (!data.items?.length) throw new Error("An order requires at least one item");
+    const orderId = await withTransaction(async (tx) => {
+      if (data.tableId) {
+        await tx.execute(sql2`select ${restaurantTables.id} from ${restaurantTables} where ${restaurantTables.id} = ${data.tableId} and ${restaurantTables.locationId} = ${data.locationId} for update`);
+        const table = await tx.select({ id: restaurantTables.id, currentOrderId: restaurantTables.currentOrderId }).from(restaurantTables).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId))).limit(1);
+        if (!table[0]) throw new Error("Table not found in this location");
+        if (table[0].currentOrderId) throw new Error("This table already has an active order");
+      }
+      const priced = await priceOrderItems(tx, data.restaurantId, data.items);
+      const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
+      if (!settings) throw new Error("Restaurant settings not found");
+      const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, settings.taxRateBps);
+      const tip = clampInteger(data.tipAmount ?? 0, 0, 1e8);
+      const created = (await tx.insert(orders).values({
+        orderNumber: `PENDING-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        restaurantId: data.restaurantId,
+        locationId: data.locationId,
+        orderType: data.orderType,
+        tableId: data.tableId || null,
+        serverName: data.serverName || "Staff Member",
+        createdByStaffId: data.createdByStaffId,
+        customerName: data.customerName || null,
+        customerPhone: data.customerPhone || null,
+        status: "active",
+        ...totals,
+        tip,
+        total: totals.total + tip,
+        paymentStatus: "unpaid",
+        notes: data.notes || null,
+        guestCount: data.guestCount || 1
+      }).returning())[0];
+      const orderNumber = `L${data.locationId}-${String(created.id).padStart(6, "0")}`;
+      await tx.update(orders).set({ orderNumber }).where(eq(orders.id, created.id));
+      await tx.insert(orderItems).values(priced.map((item) => ({ ...item, orderId: created.id, itemStatus: "sent" })));
+      if (data.tableId) await tx.update(restaurantTables).set({ status: "occupied", currentOrderId: created.id }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));
+      return created.id;
+    });
+    return await getOrderById(data.restaurantId, data.locationId, orderId);
   } catch (error) {
     console.error("Failed to create order:", error);
     throw new Error("Database query failed: createOrder", { cause: error });
   }
 }
-async function updateOrderStatus(restaurantId, orderId, status) {
+function selectedOptionPrice(optionsJson, selectedOptions) {
+  if (!selectedOptions) return 0;
+  let groups = [];
   try {
-    const updateData = { status };
-    if (status === "completed" || status === "cancelled") {
-      updateData.completedAt = /* @__PURE__ */ new Date();
+    groups = optionsJson ? JSON.parse(optionsJson) : [];
+  } catch {
+    throw new Error("Menu options are invalid");
+  }
+  const selections = selectedOptions.split(",").map((value) => value.trim()).filter(Boolean);
+  let total = 0;
+  for (const selection of selections) {
+    const separator = selection.indexOf(":");
+    if (separator < 1) throw new Error("Selected option format is invalid");
+    const groupName = selection.slice(0, separator).trim();
+    const choiceName = selection.slice(separator + 1).trim();
+    const group = groups.find((value) => value.name === groupName);
+    const choice = group?.choices.find((value) => value.name === choiceName);
+    if (!choice || !Number.isInteger(choice.price) || choice.price < 0) throw new Error(`Option ${selection} is unavailable`);
+    total += choice.price;
+  }
+  return total;
+}
+async function priceOrderItems(transaction, restaurantId, requested) {
+  const result = [];
+  for (const request of requested) {
+    const quantity = clampInteger(request.quantity, 1, 99);
+    const menuItem = (await transaction.select().from(menuItems).where(and(eq(menuItems.id, request.menuItemId), eq(menuItems.restaurantId, restaurantId), eq(menuItems.isAvailable, true))).limit(1))[0];
+    if (!menuItem) throw new Error("A selected menu item is unavailable");
+    result.push({ menuItemId: menuItem.id, name: menuItem.name, price: menuItem.price + selectedOptionPrice(menuItem.optionsJson, request.selectedOptions), quantity, selectedOptions: request.selectedOptions || null, notes: request.notes?.trim().slice(0, 500) || null });
+  }
+  return result;
+}
+async function replaceOrder(data) {
+  const orderId = await withTransaction(async (tx) => {
+    const current = (await tx.select().from(orders).where(and(eq(orders.id, data.orderId), eq(orders.restaurantId, data.restaurantId), eq(orders.locationId, data.locationId))).limit(1))[0];
+    if (!current) throw new Error("Order not found");
+    if (current.version !== data.expectedVersion) throw new Error("ORDER_CONFLICT");
+    if (current.paymentStatus !== "unpaid" || current.status !== "active") throw new Error("Only active unpaid orders can be edited");
+    if (data.tableId) {
+      const nextTable = (await tx.select({ id: restaurantTables.id, currentOrderId: restaurantTables.currentOrderId }).from(restaurantTables).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId))).limit(1))[0];
+      if (!nextTable) throw new Error("Table not found in this location");
+      if (nextTable.currentOrderId && nextTable.currentOrderId !== current.id) throw new Error("This table already has an active order");
     }
-    const res = await db.update(orders).set(updateData).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId))).returning();
-    const updated = res[0];
-    if (updated && updated.tableId && (status === "completed" || status === "cancelled")) {
-      await db.update(restaurantTables).set({
-        status: "available",
-        currentOrderId: null
-      }).where(eq(restaurantTables.id, updated.tableId));
-    }
-    return await getOrderById(restaurantId, orderId);
+    const priced = await priceOrderItems(tx, data.restaurantId, data.items);
+    const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
+    const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, settings?.taxRateBps ?? 0);
+    const tip = clampInteger(data.tipAmount ?? 0, 0, 1e8);
+    await tx.delete(orderItems).where(eq(orderItems.orderId, current.id));
+    await tx.insert(orderItems).values(priced.map((item) => ({ ...item, orderId: current.id, itemStatus: "sent" })));
+    const changed = await tx.update(orders).set({ orderType: data.orderType, tableId: data.tableId || null, customerName: data.customerName || null, customerPhone: data.customerPhone || null, notes: data.notes || null, guestCount: data.guestCount || 1, ...totals, tip, total: totals.total + tip, version: current.version + 1 }).where(and(eq(orders.id, current.id), eq(orders.version, data.expectedVersion))).returning({ id: orders.id });
+    if (!changed[0]) throw new Error("ORDER_CONFLICT");
+    if (current.tableId && current.tableId !== data.tableId) await tx.update(restaurantTables).set({ status: "available", currentOrderId: null }).where(and(eq(restaurantTables.id, current.tableId), eq(restaurantTables.locationId, data.locationId)));
+    if (data.tableId) await tx.update(restaurantTables).set({ status: "occupied", currentOrderId: current.id }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));
+    return current.id;
+  });
+  return getOrderById(data.restaurantId, data.locationId, orderId);
+}
+async function updateOrderStatus(restaurantId, locationId, orderId, status) {
+  try {
+    await withTransaction(async (tx) => {
+      const current = (await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1))[0];
+      if (!current) throw new Error("Order not found");
+      if (!canTransitionOrder(current.status || "", status)) throw new Error(`Order cannot move from ${current.status} to ${status}`);
+      if (status === "completed" && current.paymentStatus !== "paid") throw new Error("An order must be fully paid before completion");
+      await tx.update(orders).set({ status, completedAt: status === "completed" || status === "cancelled" ? /* @__PURE__ */ new Date() : null, version: current.version + 1 }).where(eq(orders.id, orderId));
+      if (current.tableId && (status === "completed" || status === "cancelled")) await tx.update(restaurantTables).set({ status: status === "completed" ? "cleaning" : "available", currentOrderId: null }).where(and(eq(restaurantTables.id, current.tableId), eq(restaurantTables.locationId, locationId)));
+    });
+    return await getOrderById(restaurantId, locationId, orderId);
   } catch (error) {
     console.error("Failed to update order status:", error);
     throw new Error("Database query failed: updateOrderStatus", { cause: error });
   }
 }
-async function updateOrderItemStatus(restaurantId, itemId, itemStatus) {
+async function updateOrderItemStatus(restaurantId, locationId, itemId, itemStatus) {
   try {
-    const owned = await db.select({ id: orderItems.id }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(and(eq(orderItems.id, itemId), eq(orders.restaurantId, restaurantId))).limit(1);
+    const owned = await db.select({ id: orderItems.id, itemStatus: orderItems.itemStatus }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(and(eq(orderItems.id, itemId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1);
     if (!owned[0]) return void 0;
+    if (!canTransitionItem(owned[0].itemStatus || "", itemStatus)) throw new Error(`Item cannot move from ${owned[0].itemStatus} to ${itemStatus}`);
     const res = await db.update(orderItems).set({ itemStatus }).where(eq(orderItems.id, itemId)).returning();
     return res[0];
   } catch (error) {
@@ -479,45 +581,47 @@ async function updateOrderItemStatus(restaurantId, itemId, itemStatus) {
     throw new Error("Database query failed: updateOrderItemStatus", { cause: error });
   }
 }
-async function processPayment(restaurantId, orderId, data) {
+async function processPayment(restaurantId, locationId, orderId, data) {
   try {
-    const ownedOrder = await getOrderById(restaurantId, orderId);
-    if (!ownedOrder) throw new Error("Order not found");
-    await db.insert(payments).values({
-      orderId,
-      amount: data.amount,
-      tip: data.tip || 0,
-      method: data.method,
-      processedBy: data.processedBy || "Cashier",
-      processedByStaffId: data.processedByStaffId,
-      transactionRef: data.transactionRef || `TXN-${Date.now()}`,
-      status: "success"
+    if (!/^[A-Za-z0-9:_-]{16,128}$/.test(data.idempotencyKey)) throw new Error("A valid payment idempotency key is required");
+    if (!["cash", "card", "digital"].includes(data.method)) throw new Error("Unsupported payment method");
+    await withTransaction(async (tx) => {
+      const duplicate = (await tx.select().from(payments).where(eq(payments.idempotencyKey, data.idempotencyKey)).limit(1))[0];
+      if (duplicate) {
+        if (duplicate.orderId !== orderId) throw new Error("Payment key is already assigned to another order");
+        return;
+      }
+      await tx.execute(sql2`select ${orders.id} from ${orders} where ${orders.id} = ${orderId} and ${orders.restaurantId} = ${restaurantId} and ${orders.locationId} = ${locationId} for update`);
+      const order = (await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1))[0];
+      if (!order || order.status === "cancelled") throw new Error("Order is not payable");
+      const prior = await tx.select({ total: sql2`coalesce(sum(${payments.amount}), 0)` }).from(payments).where(and(eq(payments.orderId, orderId), eq(payments.status, "success")));
+      const priorPaid = Number(prior[0]?.total || 0);
+      const tip = priorPaid === 0 ? clampInteger(data.tip ?? 0, 0, 1e8) : 0;
+      const adjustedTotal = order.total + tip;
+      const balance = adjustedTotal - priorPaid;
+      const amount = clampInteger(data.amount, 1, 1e9);
+      if (amount > balance) throw new Error("Payment exceeds the outstanding balance");
+      const tenderedAmount = clampInteger(data.tenderedAmount ?? amount, 0, 1e9);
+      if (data.method === "cash" && tenderedAmount < amount) throw new Error("Cash tendered is below the payment amount");
+      await tx.insert(payments).values({ orderId, amount, tip, method: data.method, processedBy: data.processedBy || "Cashier", processedByStaffId: data.processedByStaffId, transactionRef: data.transactionRef || `TXN-${Date.now()}`, idempotencyKey: data.idempotencyKey, tenderedAmount, status: "success" });
+      const paid = priorPaid + amount;
+      const nextPaymentState = paymentState(adjustedTotal, paid);
+      const isPaid = nextPaymentState === "paid";
+      await tx.update(orders).set({ paymentStatus: nextPaymentState, paymentMethod: isPaid ? data.method : "split", status: isPaid ? "completed" : order.status, tip: order.tip + tip, total: adjustedTotal, completedAt: isPaid ? /* @__PURE__ */ new Date() : null, version: order.version + 1 }).where(eq(orders.id, orderId));
+      if (isPaid && order.tableId) await tx.update(restaurantTables).set({ status: "cleaning", currentOrderId: null }).where(and(eq(restaurantTables.id, order.tableId), eq(restaurantTables.locationId, locationId)));
     });
-    const updatedOrder = await db.update(orders).set({
-      paymentStatus: "paid",
-      paymentMethod: data.method,
-      status: "completed",
-      tip: data.tip || 0,
-      completedAt: /* @__PURE__ */ new Date()
-    }).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId))).returning();
-    const order = updatedOrder[0];
-    if (order && order.tableId) {
-      await db.update(restaurantTables).set({
-        status: "cleaning",
-        currentOrderId: null
-      }).where(eq(restaurantTables.id, order.tableId));
-    }
-    return await getOrderById(restaurantId, orderId);
+    return await getOrderById(restaurantId, locationId, orderId);
   } catch (error) {
     console.error("Failed to process payment:", error);
     throw new Error("Database query failed: processPayment", { cause: error });
   }
 }
-async function getAnalyticsSummary(restaurantId) {
+async function getAnalyticsSummary(restaurantId, locationId, startAt = new Date((/* @__PURE__ */ new Date()).setHours(0, 0, 0, 0))) {
   try {
-    const allOrders = await db.select().from(orders).where(eq(orders.restaurantId, restaurantId));
-    const allItems = await db.select({ name: orderItems.name, quantity: orderItems.quantity, price: orderItems.price }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(eq(orders.restaurantId, restaurantId));
-    const allPayments = await db.select({ method: payments.method, amount: payments.amount }).from(payments).innerJoin(orders, eq(orders.id, payments.orderId)).where(eq(orders.restaurantId, restaurantId));
+    const scope = and(eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId), gte(orders.createdAt, startAt));
+    const allOrders = await db.select().from(orders).where(scope);
+    const allItems = await db.select({ name: orderItems.name, quantity: orderItems.quantity, price: orderItems.price }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(and(scope, eq(orders.paymentStatus, "paid")));
+    const allPayments = await db.select({ method: payments.method, amount: payments.amount }).from(payments).innerJoin(orders, eq(orders.id, payments.orderId)).where(and(scope, eq(payments.status, "success")));
     const paidOrders = allOrders.filter((o) => o.paymentStatus === "paid");
     const totalRevenueCents = paidOrders.reduce((sum, o) => sum + (o.total || 0), 0);
     const totalTipsCents = paidOrders.reduce((sum, o) => sum + (o.tip || 0), 0);
@@ -578,9 +682,9 @@ async function updateUserRole(id, role) {
     throw new Error("Failed to update staff user role", { cause: error });
   }
 }
-async function getUserByClerkId(clerkUserId) {
-  const result = await db.select().from(users).where(eq2(users.clerkUserId, clerkUserId)).limit(1);
-  return result[0] ?? null;
+async function getUserByClerkOrg(clerkUserId, clerkOrganizationId) {
+  const result = await db.select({ user: users }).from(users).innerJoin(restaurants, eq2(restaurants.id, users.restaurantId)).where(and2(eq2(users.clerkUserId, clerkUserId), eq2(restaurants.clerkOrganizationId, clerkOrganizationId), eq2(users.isActive, true), eq2(restaurants.status, "active"))).limit(1);
+  return result[0]?.user ?? null;
 }
 async function getUserById(id) {
   const result = await db.select().from(users).where(eq2(users.id, id)).limit(1);
@@ -603,22 +707,30 @@ async function getAllUsers(restaurantId, locationId) {
   }
 }
 async function setUserActive(id, isActive) {
-  const updated = (await db.update(users).set({ isActive, updatedAt: /* @__PURE__ */ new Date() }).where(eq2(users.id, id)).returning())[0] ?? null;
-  if (updated && !isActive) {
-    await db.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq2(staffSessions.staffId, id));
-  }
-  return updated;
+  return withTransaction(async (transaction) => {
+    const updated = (await transaction.update(users).set({ isActive, updatedAt: /* @__PURE__ */ new Date() }).where(eq2(users.id, id)).returning())[0] ?? null;
+    if (updated && !isActive) await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq2(staffSessions.staffId, id));
+    return updated;
+  });
 }
 async function permanentlyDeleteUser(id) {
-  await db.delete(staffSessions).where(eq2(staffSessions.staffId, id));
-  return (await db.delete(users).where(eq2(users.id, id)).returning())[0] ?? null;
+  return withTransaction(async (transaction) => {
+    const [orderReference, paymentReference, auditReference] = await Promise.all([
+      transaction.select({ id: orders.id }).from(orders).where(eq2(orders.createdByStaffId, id)).limit(1),
+      transaction.select({ id: payments.id }).from(payments).where(eq2(payments.processedByStaffId, id)).limit(1),
+      transaction.select({ id: auditEvents.id }).from(auditEvents).where(eq2(auditEvents.actorStaffId, id)).limit(1)
+    ]);
+    if (orderReference[0] || paymentReference[0] || auditReference[0]) throw new Error("STAFF_HAS_BUSINESS_HISTORY");
+    await transaction.delete(staffSessions).where(eq2(staffSessions.staffId, id));
+    return (await transaction.delete(users).where(eq2(users.id, id)).returning())[0] ?? null;
+  });
 }
 
 // src/middleware/auth.ts
 import { clerkClient, getAuth } from "@clerk/express";
 
 // src/db/access.ts
-import { and as and3, eq as eq3, gt, isNotNull, isNull, ne, sql as sql3 } from "drizzle-orm";
+import { and as and3, desc as desc2, eq as eq3, gt, isNotNull, isNull as isNull2, ne, sql as sql3 } from "drizzle-orm";
 
 // src/auth/security.ts
 import { createHash, randomBytes, scrypt as nodeScrypt, timingSafeEqual } from "node:crypto";
@@ -677,27 +789,24 @@ async function ensureAccountForStaff(staffId) {
   if (staff[0].restaurantId && staff[0].locationId) return staff[0];
   throw new Error("Staff profile is not attached to a restaurant organization");
 }
-async function enrollTerminal(staffId, name, type = "register") {
+async function authorizeTerminal(staffId, name, pin, type = "register") {
   const staff = await ensureAccountForStaff(staffId);
-  if (!staff.restaurantId || !staff.locationId) throw new Error("Restaurant account is incomplete");
+  await assertUniqueLocationPin(staff.locationId, pin, staffId);
+  const pinHash = await hashPin(pin);
   const rawToken = newOpaqueToken();
-  const terminal = (await db.insert(terminals).values({
-    restaurantId: staff.restaurantId,
-    locationId: staff.locationId,
-    name,
-    type,
-    credentialHash: hashToken(rawToken),
-    enrolledByStaffId: staff.id
-  }).returning())[0];
-  await writeAudit({ terminal, actorStaffId: staff.id, action: "terminal.enrolled", entityType: "terminal", entityId: String(terminal.id) });
-  return { terminal, rawToken };
+  return withTransaction(async (transaction) => {
+    await transaction.update(users).set({ pinHash, pinVersion: sql3`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(users.id, staff.id));
+    const terminal = (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId, locationId: staff.locationId, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];
+    await transaction.insert(auditEvents).values({ restaurantId: terminal.restaurantId, locationId: terminal.locationId, terminalId: terminal.id, actorStaffId: staff.id, action: "terminal.enrolled", entityType: "terminal", entityId: String(terminal.id) });
+    return { terminal, rawToken };
+  });
 }
 async function findTerminalByToken(rawToken) {
   if (!rawToken) return null;
   const result = await db.select({ terminal: terminals }).from(terminals).innerJoin(restaurants, eq3(restaurants.id, terminals.restaurantId)).where(and3(
     eq3(terminals.credentialHash, hashToken(rawToken)),
     eq3(terminals.isActive, true),
-    isNull(terminals.revokedAt),
+    isNull2(terminals.revokedAt),
     eq3(restaurants.status, "active")
   )).limit(1);
   return result[0]?.terminal ?? null;
@@ -715,23 +824,24 @@ async function listTerminalStaff(terminalId) {
 async function authenticatePin(terminalId, staffId, pin) {
   const terminal = (await db.select().from(terminals).where(eq3(terminals.id, terminalId)).limit(1))[0];
   if (!terminal) return { ok: false, reason: "invalid" };
-  if (terminal.lockedUntil && terminal.lockedUntil > /* @__PURE__ */ new Date()) return { ok: false, reason: "locked" };
   const staff = (await db.select().from(users).where(and3(
     eq3(users.id, staffId),
     eq3(users.restaurantId, terminal.restaurantId),
     eq3(users.locationId, terminal.locationId),
     eq3(users.isActive, true)
   )).limit(1))[0];
+  if (staff?.pinLockedUntil && staff.pinLockedUntil > /* @__PURE__ */ new Date()) return { ok: false, reason: "locked" };
   const valid = Boolean(staff?.pinHash) && await verifyPin(pin, staff.pinHash);
   if (!valid) {
-    const attempts = terminal.failedPinAttempts + 1;
-    await db.update(terminals).set({
+    const attempts = (staff?.failedPinAttempts || 0) + 1;
+    if (staff) await db.update(users).set({
       failedPinAttempts: attempts >= 5 ? 0 : attempts,
-      lockedUntil: attempts >= 5 ? new Date(Date.now() + 6e4) : null
-    }).where(eq3(terminals.id, terminal.id));
+      pinLockedUntil: attempts >= 5 ? new Date(Date.now() + 6e4) : null
+    }).where(eq3(users.id, staff.id));
     return { ok: false, reason: attempts >= 5 ? "locked" : "invalid" };
   }
-  await db.update(terminals).set({ failedPinAttempts: 0, lockedUntil: null, lastSeenAt: /* @__PURE__ */ new Date() }).where(eq3(terminals.id, terminal.id));
+  await db.update(users).set({ failedPinAttempts: 0, pinLockedUntil: null }).where(eq3(users.id, staff.id));
+  await db.update(terminals).set({ lastSeenAt: /* @__PURE__ */ new Date() }).where(eq3(terminals.id, terminal.id));
   const rawToken = newOpaqueToken();
   const expiresAt = new Date(Date.now() + terminal.inactivityTimeoutMinutes * 6e4);
   const session = (await db.insert(staffSessions).values({
@@ -748,12 +858,13 @@ async function findStaffSession(rawToken, terminalId) {
   const rows = await db.select({ session: staffSessions, staff: users }).from(staffSessions).innerJoin(users, eq3(users.id, staffSessions.staffId)).where(and3(
     eq3(staffSessions.tokenHash, hashToken(rawToken)),
     eq3(staffSessions.terminalId, terminalId),
-    isNull(staffSessions.revokedAt),
+    isNull2(staffSessions.revokedAt),
     gt(staffSessions.expiresAt, /* @__PURE__ */ new Date()),
     eq3(users.isActive, true)
   )).limit(1);
   if (!rows[0]) return null;
-  const expiresAt = new Date(Date.now() + 15 * 6e4);
+  const terminal = (await db.select({ inactivityTimeoutMinutes: terminals.inactivityTimeoutMinutes }).from(terminals).where(eq3(terminals.id, terminalId)).limit(1))[0];
+  const expiresAt = new Date(Date.now() + (terminal?.inactivityTimeoutMinutes || 15) * 6e4);
   await db.update(staffSessions).set({ lastActivityAt: /* @__PURE__ */ new Date(), expiresAt }).where(eq3(staffSessions.id, rows[0].session.id));
   return { ...rows[0], expiresAt };
 }
@@ -762,7 +873,7 @@ async function revokeStaffSession(rawToken) {
   await db.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq3(staffSessions.tokenHash, hashToken(rawToken)));
 }
 async function revokeTerminal(terminalId) {
-  await db.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(and3(eq3(staffSessions.terminalId, terminalId), isNull(staffSessions.revokedAt)));
+  await db.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(and3(eq3(staffSessions.terminalId, terminalId), isNull2(staffSessions.revokedAt)));
   return (await db.update(terminals).set({ isActive: false, revokedAt: /* @__PURE__ */ new Date() }).where(eq3(terminals.id, terminalId)).returning())[0] ?? null;
 }
 async function setStaffPin(staffId, pin) {
@@ -770,12 +881,11 @@ async function setStaffPin(staffId, pin) {
   if (!target) return null;
   await assertUniqueLocationPin(target.locationId, pin, staffId);
   const pinHash = await hashPin(pin);
-  const updated = await db.update(users).set({
-    pinHash,
-    pinVersion: sql3`${users.pinVersion} + 1`,
-    updatedAt: /* @__PURE__ */ new Date()
-  }).where(eq3(users.id, staffId)).returning();
-  return updated[0] ?? null;
+  return withTransaction(async (transaction) => {
+    const updated = await transaction.update(users).set({ pinHash, pinVersion: sql3`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(users.id, staffId)).returning();
+    await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(and3(eq3(staffSessions.staffId, staffId), isNull2(staffSessions.revokedAt)));
+    return updated[0] ?? null;
+  });
 }
 async function createPinStaff(input) {
   await assertUniqueLocationPin(input.locationId, input.pin);
@@ -804,14 +914,17 @@ async function writeAudit(input) {
     metadata: input.metadata
   });
 }
+async function listAuditEvents(restaurantId, locationId, limit = 100) {
+  return db.select().from(auditEvents).where(and3(eq3(auditEvents.restaurantId, restaurantId), eq3(auditEvents.locationId, locationId))).orderBy(desc2(auditEvents.createdAt)).limit(Math.min(200, Math.max(1, limit)));
+}
 
 // src/middleware/auth.ts
 var rolePermissions = {
-  restaurant_owner: ["orders.read", "orders.write", "orders.cancel", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "menu.manage", "reports.view", "staff.manage", "terminals.manage"],
-  restaurant_admin: ["orders.read", "orders.write", "orders.cancel", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "menu.manage", "reports.view", "staff.manage", "terminals.manage"],
-  general_manager: ["orders.read", "orders.write", "orders.cancel", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "menu.manage", "reports.view", "staff.manage", "terminals.manage"],
+  restaurant_owner: ["orders.read", "orders.write", "orders.cancel", "discounts.apply", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "menu.manage", "reports.view", "staff.manage", "terminals.manage"],
+  restaurant_admin: ["orders.read", "orders.write", "orders.cancel", "discounts.apply", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "menu.manage", "reports.view", "staff.manage", "terminals.manage"],
+  general_manager: ["orders.read", "orders.write", "orders.cancel", "discounts.apply", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "menu.manage", "reports.view", "staff.manage", "terminals.manage"],
   accountant: ["orders.read", "reports.view"],
-  shift_manager: ["orders.read", "orders.write", "orders.cancel", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "reports.view"],
+  shift_manager: ["orders.read", "orders.write", "orders.cancel", "discounts.apply", "payments.process", "payments.refund", "tables.manage", "kitchen.manage", "reports.view"],
   cashier: ["orders.read", "orders.write", "payments.process", "tables.manage"],
   server: ["orders.read", "orders.write", "tables.manage"],
   bartender: ["orders.read", "orders.write", "payments.process", "tables.manage"],
@@ -825,7 +938,7 @@ var attachClerkAuth = async (req, _res, next) => {
       req.authUserId = auth.userId;
       req.clerkOrgId = auth.orgId;
       req.clerkOrgRole = auth.orgRole;
-      const user = await getUserByClerkId(auth.userId);
+      const user = auth.orgId ? await getUserByClerkOrg(auth.userId, auth.orgId) : null;
       if (user) {
         req.userRole = user.role;
       }
@@ -908,11 +1021,13 @@ function appRoleForClerkRole(role) {
 }
 
 // src/db/organizations.ts
-import { eq as eq4 } from "drizzle-orm";
+import { and as and4, eq as eq4 } from "drizzle-orm";
 async function createRestaurantRecord(input) {
-  const restaurant = (await db.insert(restaurants).values({ ...input, status: "active" }).returning())[0];
-  const location = (await db.insert(locations).values({ restaurantId: restaurant.id, name: "Main Location" }).returning())[0];
-  return { restaurant, location };
+  return withTransaction(async (transaction) => {
+    const restaurant = (await transaction.insert(restaurants).values({ ...input, status: "active", receiptName: input.name }).returning())[0];
+    const location = (await transaction.insert(locations).values({ restaurantId: restaurant.id, name: "Main Location" }).returning())[0];
+    return { restaurant, location };
+  });
 }
 async function getRestaurantByClerkOrgId(clerkOrganizationId) {
   return (await db.select().from(restaurants).where(eq4(restaurants.clerkOrganizationId, clerkOrganizationId)).limit(1))[0] ?? null;
@@ -926,10 +1041,26 @@ async function getRestaurantWithDefaultLocation(clerkOrganizationId) {
 async function listRestaurantClients() {
   return db.select().from(restaurants);
 }
+async function updateRestaurantStatus(restaurantId, status) {
+  return (await db.update(restaurants).set({ status }).where(eq4(restaurants.id, restaurantId)).returning())[0] ?? null;
+}
+async function getRestaurantSettings(restaurantId, locationId) {
+  const restaurant = (await db.select().from(restaurants).where(eq4(restaurants.id, restaurantId)).limit(1))[0];
+  const location = (await db.select().from(locations).where(and4(eq4(locations.id, locationId), eq4(locations.restaurantId, restaurantId))).limit(1))[0];
+  return restaurant && location ? { restaurant, location } : null;
+}
+async function updateRestaurantSettings(restaurantId, locationId, terminalId, input) {
+  return withTransaction(async (transaction) => {
+    const restaurant = (await transaction.update(restaurants).set({ receiptName: input.receiptName, currency: input.currency, taxRateBps: input.taxRateBps }).where(eq4(restaurants.id, restaurantId)).returning())[0];
+    const location = (await transaction.update(locations).set({ timezone: input.timezone }).where(and4(eq4(locations.id, locationId), eq4(locations.restaurantId, restaurantId))).returning())[0];
+    await transaction.update(terminals).set({ inactivityTimeoutMinutes: input.inactivityTimeoutMinutes }).where(and4(eq4(terminals.id, terminalId), eq4(terminals.locationId, locationId)));
+    return { restaurant, location, inactivityTimeoutMinutes: input.inactivityTimeoutMinutes };
+  });
+}
 async function attachBackOfficeUser(input) {
   const account = await getRestaurantWithDefaultLocation(input.orgId);
   if (!account?.location || account.restaurant.status !== "active") throw new Error("Restaurant organization is not active");
-  const existing = (await db.select().from(users).where(eq4(users.clerkUserId, input.clerkUserId)).limit(1))[0];
+  const existing = (await db.select().from(users).where(and4(eq4(users.clerkUserId, input.clerkUserId), eq4(users.restaurantId, account.restaurant.id))).limit(1))[0];
   if (existing) {
     return (await db.update(users).set({
       restaurantId: account.restaurant.id,
@@ -1049,6 +1180,13 @@ app.post("/api/platform/clients", requireStrictAuth, requirePlatformRole(["platf
     res.status(400).json({ error: platformSetupError(error) });
   }
 });
+app.patch("/api/platform/clients/:id/status", requireStrictAuth, requirePlatformRole(["platform_owner"]), async (req, res) => {
+  const status = String(req.body.status);
+  if (!["active", "suspended"].includes(status)) return res.status(400).json({ error: "Invalid client status" });
+  const client = await updateRestaurantStatus(Number(req.params.id), status);
+  if (!client) return res.status(404).json({ error: "Restaurant client not found" });
+  res.json(client);
+});
 app.post("/api/organization/invitations", requireStrictAuth, requireTerminal, requireStaffSession, async (req, res) => {
   try {
     const { userId, orgId, orgRole } = getAuth2(req);
@@ -1075,8 +1213,7 @@ app.post("/api/access/terminal/enroll", requireStrictAuth, async (req, res) => {
     const pin = String(req.body.pin || "");
     if (name.length < 2 || name.length > 60) return res.status(400).json({ error: "Terminal name must contain 2 to 60 characters" });
     if (!validatePinFormat(pin)) return res.status(400).json({ error: "Administrator PIN must contain 4 to 6 digits" });
-    await setStaffPin(clerkStaff.id, pin);
-    const { terminal, rawToken } = await enrollTerminal(clerkStaff.id, name, String(req.body.type || "register"));
+    const { terminal, rawToken } = await authorizeTerminal(clerkStaff.id, name, pin, String(req.body.type || "register"));
     res.setHeader("Set-Cookie", sessionCookie(TERMINAL_COOKIE, rawToken, 60 * 60 * 24 * 90));
     res.status(201).json({ terminal: publicTerminal(terminal) });
   } catch (error) {
@@ -1112,6 +1249,35 @@ app.get("/api/access/session", requireTerminal, requireStaffSession, (req, res) 
 app.use("/api", requireTerminal, requireStaffSession);
 app.use("/api/staff", requirePermission("staff.manage"));
 app.use("/api/analytics", requirePermission("reports.view"));
+app.get("/api/config", async (req, res) => {
+  const settings = await getRestaurantSettings(req.terminal.restaurantId, req.terminal.locationId);
+  if (!settings) return res.status(404).json({ error: "Restaurant configuration not found" });
+  res.json({ receiptName: settings.restaurant.receiptName || settings.restaurant.name, currency: settings.restaurant.currency, taxRateBps: settings.restaurant.taxRateBps, timezone: settings.location.timezone });
+});
+app.get("/api/settings", requirePermission("staff.manage"), async (req, res) => {
+  const settings = await getRestaurantSettings(req.terminal.restaurantId, req.terminal.locationId);
+  if (!settings) return res.status(404).json({ error: "Restaurant settings not found" });
+  res.json({ receiptName: settings.restaurant.receiptName || settings.restaurant.name, currency: settings.restaurant.currency, taxRateBps: settings.restaurant.taxRateBps, timezone: settings.location.timezone, inactivityTimeoutMinutes: req.terminal.inactivityTimeoutMinutes });
+});
+app.put("/api/settings", requirePermission("staff.manage"), async (req, res) => {
+  const receiptName = String(req.body.receiptName || "").trim();
+  const currency = String(req.body.currency || "").trim().toUpperCase();
+  const timezone = String(req.body.timezone || "").trim();
+  const taxRateBps = Number(req.body.taxRateBps);
+  const inactivityTimeoutMinutes = Number(req.body.inactivityTimeoutMinutes);
+  if (receiptName.length < 2 || !/^[A-Z]{3}$/.test(currency) || !Number.isInteger(taxRateBps) || taxRateBps < 0 || taxRateBps > 1e4 || !Number.isInteger(inactivityTimeoutMinutes) || inactivityTimeoutMinutes < 1 || inactivityTimeoutMinutes > 240) return res.status(400).json({ error: "Invalid restaurant settings" });
+  try {
+    Intl.DateTimeFormat("en", { timeZone: timezone });
+  } catch {
+    return res.status(400).json({ error: "Invalid IANA timezone" });
+  }
+  const updated = await updateRestaurantSettings(req.terminal.restaurantId, req.terminal.locationId, req.terminal.id, { receiptName, currency, timezone, taxRateBps, inactivityTimeoutMinutes });
+  await writeAudit({ terminal: req.terminal, actorStaffId: req.staff.id, action: "settings.updated", entityType: "restaurant", entityId: String(req.terminal.restaurantId) });
+  res.json(updated);
+});
+app.get("/api/audit", requirePermission("reports.view"), async (req, res) => {
+  res.json(await listAuditEvents(req.terminal.restaurantId, req.terminal.locationId, Number(req.query.limit) || 100));
+});
 app.delete("/api/access/terminal", requirePermission("terminals.manage"), async (req, res) => {
   await writeAudit({ terminal: req.terminal, actorStaffId: req.staff.id, action: "terminal.revoked", entityType: "terminal", entityId: String(req.terminal.id) });
   await revokeTerminal(req.terminal.id);
@@ -1170,6 +1336,12 @@ app.patch("/api/staff/:id/access", async (req, res) => {
     const target = await getUserById(id);
     if (!target || target.restaurantId !== req.terminal.restaurantId || target.locationId !== req.terminal.locationId) return res.status(404).json({ error: "Staff profile not found" });
     if (target.id === req.staff.id && !isActive) return res.status(400).json({ error: "You cannot revoke your own active session" });
+    if (target.clerkUserId) {
+      if (isActive) return res.status(400).json({ error: "Re-invite this back-office user through Clerk to restore access" });
+      const { orgId } = getAuth2(req);
+      if (!orgId) return res.status(400).json({ error: "Select the restaurant organization first" });
+      await clerkClient2.organizations.deleteOrganizationMembership({ organizationId: orgId, userId: target.clerkUserId });
+    }
     const updated = await setUserActive(id, isActive);
     await writeAudit({ terminal: req.terminal, actorStaffId: req.staff.id, action: isActive ? "staff.access_restored" : "staff.access_revoked", entityType: "staff", entityId: String(id) });
     res.json(publicStaff(updated));
@@ -1189,7 +1361,7 @@ app.delete("/api/staff/:id", async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     const detail = String(error?.cause?.message || error?.message || "");
-    const referenced = detail.toLowerCase().includes("foreign key");
+    const referenced = detail.includes("STAFF_HAS_BUSINESS_HISTORY") || detail.toLowerCase().includes("foreign key");
     res.status(400).json({ error: referenced ? "This staff profile has business history and cannot be deleted. Revoke access instead." : detail || "Unable to delete staff profile" });
   }
 });
@@ -1302,8 +1474,10 @@ app.post("/api/tables", requirePermission("tables.manage"), async (req, res) => 
 app.patch("/api/tables/:id", requirePermission("tables.manage"), async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { status, currentOrderId } = req.body;
-    const table = await updateTableStatus(req.terminal.locationId, id, status, currentOrderId);
+    const { status } = req.body;
+    if (!["available", "reserved", "billing"].includes(String(status))) return res.status(400).json({ error: "That table state is controlled by the order and payment workflow" });
+    const table = await updateTableStatus(req.terminal.locationId, id, status);
+    if (!table) return res.status(404).json({ error: "Table not found" });
     res.json(table);
   } catch (error) {
     console.error("Failed to update table:", error);
@@ -1314,7 +1488,7 @@ app.patch("/api/tables/:id", requirePermission("tables.manage"), async (req, res
 app.get("/api/orders", async (req, res) => {
   try {
     const statusFilter = req.query.status;
-    const ordersList = await getOrders(req.terminal.restaurantId, statusFilter);
+    const ordersList = await getOrders(req.terminal.restaurantId, req.terminal.locationId, statusFilter);
     res.json(ordersList);
   } catch (error) {
     console.error("Failed to fetch orders:", error);
@@ -1325,7 +1499,7 @@ app.get("/api/orders", async (req, res) => {
 app.get("/api/orders/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const order = await getOrderById(req.terminal.restaurantId, id);
+    const order = await getOrderById(req.terminal.restaurantId, req.terminal.locationId, id);
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
     }
@@ -1338,12 +1512,29 @@ app.get("/api/orders/:id", async (req, res) => {
 });
 app.post("/api/orders", requirePermission("orders.write"), async (req, res) => {
   try {
-    const order = await createOrder({ ...req.body, restaurantId: req.terminal.restaurantId, locationId: req.terminal.locationId, serverName: req.staff?.name || "Staff Member", createdByStaffId: req.staff?.id });
-    res.json(order);
+    if (!["dine-in", "takeout", "delivery", "bar"].includes(String(req.body.orderType))) return res.status(400).json({ error: "Invalid order type" });
+    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff.role).includes("discounts.apply")) return res.status(403).json({ error: "Manager approval is required to apply a discount" });
+    const order = await createOrder({ orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal.restaurantId, locationId: req.terminal.locationId, serverName: req.staff?.name || "Staff Member", createdByStaffId: req.staff?.id });
+    await writeAudit({ terminal: req.terminal, actorStaffId: req.staff.id, action: "order.created", entityType: "order", entityId: String(order.id), metadata: { total: order.total } });
+    res.status(201).json(order);
   } catch (error) {
     console.error("Failed to create order:", error);
     const message = error?.cause?.message || error?.message || "Failed to create order";
     res.status(500).json({ error: message });
+  }
+});
+app.put("/api/orders/:id", requirePermission("orders.write"), async (req, res) => {
+  try {
+    if (!["dine-in", "takeout", "delivery", "bar"].includes(String(req.body.orderType))) return res.status(400).json({ error: "Invalid order type" });
+    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff.role).includes("discounts.apply")) return res.status(403).json({ error: "Manager approval is required to apply a discount" });
+    const expectedVersion = Number(req.body.expectedVersion);
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 1) return res.status(400).json({ error: "A valid order version is required" });
+    const order = await replaceOrder({ orderId: Number(req.params.id), expectedVersion, orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal.restaurantId, locationId: req.terminal.locationId, serverName: req.staff?.name || "Staff Member", createdByStaffId: req.staff?.id });
+    await writeAudit({ terminal: req.terminal, actorStaffId: req.staff.id, action: "order.updated", entityType: "order", entityId: String(order.id), metadata: { version: order.version } });
+    res.json(order);
+  } catch (error) {
+    const message = error?.cause?.message || error?.message || "Order update failed";
+    res.status(message.includes("ORDER_CONFLICT") ? 409 : 400).json({ error: message.includes("ORDER_CONFLICT") ? "This order changed on another terminal. Reload it before saving." : message });
   }
 });
 app.patch("/api/orders/:id/status", requirePermission("orders.write"), async (req, res) => {
@@ -1353,7 +1544,8 @@ app.patch("/api/orders/:id/status", requirePermission("orders.write"), async (re
     if (status === "cancelled" && !["restaurant_owner", "restaurant_admin", "general_manager", "shift_manager"].includes(String(req.staff?.role))) {
       return res.status(403).json({ error: "Manager approval required to cancel an order" });
     }
-    const order = await updateOrderStatus(req.terminal.restaurantId, id, status);
+    const order = await updateOrderStatus(req.terminal.restaurantId, req.terminal.locationId, id, status);
+    await writeAudit({ terminal: req.terminal, actorStaffId: req.staff.id, action: `order.${status}`, entityType: "order", entityId: String(id) });
     res.json(order);
   } catch (error) {
     console.error("Failed to update order status:", error);
@@ -1365,7 +1557,8 @@ app.patch("/api/orders/items/:id/status", requirePermission("kitchen.manage"), a
   try {
     const id = Number(req.params.id);
     const { status } = req.body;
-    const item = await updateOrderItemStatus(req.terminal.restaurantId, id, status);
+    if (!["preparing", "ready", "served", "void"].includes(String(status))) return res.status(400).json({ error: "Invalid item status" });
+    const item = await updateOrderItemStatus(req.terminal.restaurantId, req.terminal.locationId, id, status);
     res.json(item);
   } catch (error) {
     console.error("Failed to update item status:", error);
@@ -1376,15 +1569,18 @@ app.patch("/api/orders/items/:id/status", requirePermission("kitchen.manage"), a
 app.post("/api/orders/:id/pay", requirePermission("payments.process"), async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { amount, tip, method, transactionRef } = req.body;
-    const order = await processPayment(req.terminal.restaurantId, id, {
+    const { amount, tip, method, transactionRef, idempotencyKey, tenderedAmount } = req.body;
+    const order = await processPayment(req.terminal.restaurantId, req.terminal.locationId, id, {
       amount,
       tip,
       method,
       processedBy: req.staff?.name || "Cashier",
       processedByStaffId: req.staff?.id,
-      transactionRef
+      transactionRef,
+      idempotencyKey: String(idempotencyKey || ""),
+      tenderedAmount
     });
+    await writeAudit({ terminal: req.terminal, actorStaffId: req.staff.id, action: "payment.recorded", entityType: "order", entityId: String(id), metadata: { amount, method, idempotencyKey } });
     res.json(order);
   } catch (error) {
     console.error("Failed to process payment:", error);
@@ -1394,7 +1590,9 @@ app.post("/api/orders/:id/pay", requirePermission("payments.process"), async (re
 });
 app.get("/api/analytics", async (req, res) => {
   try {
-    const analytics = await getAnalyticsSummary(req.terminal.restaurantId);
+    const startAt = req.query.start ? new Date(String(req.query.start)) : void 0;
+    if (startAt && Number.isNaN(startAt.getTime())) return res.status(400).json({ error: "Invalid report start date" });
+    const analytics = await getAnalyticsSummary(req.terminal.restaurantId, req.terminal.locationId, startAt);
     res.json(analytics);
   } catch (error) {
     console.error("Failed to get analytics:", error);

@@ -20,7 +20,9 @@ import {
 export default function ReportsView() {
   const { orders } = usePos();
 
-  const completedOrders = orders.filter((o) => o.status === 'completed');
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const completedOrders = orders.filter((o) => o.status === 'completed' && new Date(o.completedAt || o.createdAt) >= todayStart);
 
   const totalGross = completedOrders.reduce((sum, o) => sum + o.total, 0);
   const totalTax = completedOrders.reduce((sum, o) => sum + o.tax, 0);

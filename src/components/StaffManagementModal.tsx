@@ -20,6 +20,8 @@ export default function StaffManagementModal({ onClose }: { onClose: () => void 
   const [adminRole, setAdminRole] = useState<'restaurant_admin' | 'general_manager' | 'accountant'>('restaurant_admin');
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<StaffRow | null>(null);
+  const [pinTarget, setPinTarget] = useState<StaffRow | null>(null);
+  const [replacementPin, setReplacementPin] = useState('');
   const [staffLoading, setStaffLoading] = useState(true);
   const [staffLoadError, setStaffLoadError] = useState('');
   const load = async (showSkeleton = false) => {
@@ -45,11 +47,11 @@ export default function StaffManagementModal({ onClose }: { onClose: () => void 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || pendingAction?.startsWith('delete-')) return;
-      if (deleteTarget) setDeleteTarget(null); else onClose();
+      if (deleteTarget) setDeleteTarget(null); else if (pinTarget) setPinTarget(null); else onClose();
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => { window.removeEventListener('keydown', closeOnEscape); };
-  }, [deleteTarget, onClose, pendingAction]);
+  }, [deleteTarget, onClose, pendingAction, pinTarget]);
   const create = async (event: React.FormEvent) => {
     event.preventDefault(); setMessage(''); setPendingAction('create');
     try {
@@ -59,12 +61,15 @@ export default function StaffManagementModal({ onClose }: { onClose: () => void 
       setName(''); setPin(''); setMessage('Profile created'); await load(); await refreshAccess({ silent: true });
     } finally { setPendingAction(null); }
   };
-  const resetPin = async (id: number) => {
-    const nextPin = window.prompt('Enter a new 4–6 digit PIN');
-    if (!nextPin) return;
-    const response = await fetch(`/api/staff/${id}/pin`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: nextPin }) });
-    const body = await response.json().catch(() => ({}));
-    setMessage(response.ok ? 'PIN updated' : body.error || 'Unable to update PIN');
+  const resetPin = async () => {
+    if (!pinTarget) return;
+    setPendingAction(`pin-${pinTarget.id}`); setMessage('');
+    try {
+      const response = await fetch(`/api/staff/${pinTarget.id}/pin`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: replacementPin }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) return setMessage(body.error || 'Unable to update PIN');
+      setMessage('PIN updated and existing sessions revoked'); setPinTarget(null); setReplacementPin('');
+    } finally { setPendingAction(null); }
   };
   const inviteAdmin = async (event: React.FormEvent) => {
     event.preventDefault(); setMessage('');
@@ -111,7 +116,7 @@ export default function StaffManagementModal({ onClose }: { onClose: () => void 
         </div>}
         {!staffLoading && staffLoadError && <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700"><p>{staffLoadError}</p><Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => load(true)}>Try again</Button></div>}
         {!staffLoading && !staffLoadError && staff.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-6 text-center"><p className="text-sm font-medium text-slate-700">No staff profiles yet</p><p className="mt-1 text-xs text-slate-500">Create the first PIN profile using the form above.</p></div>}
-        {!staffLoading && !staffLoadError && staff.map(person => <div key={person.id} className={`flex flex-col gap-3 border rounded-xl p-3 sm:flex-row sm:items-center sm:justify-between ${person.isActive ? '' : 'bg-slate-50 opacity-75'}`}><div className="min-w-0"><div className="flex items-center gap-2"><p className="truncate font-semibold text-sm">{person.name || person.email}</p>{!person.isActive && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-600">Revoked</span>}</div><p className="text-xs text-slate-500 capitalize">{person.role}</p></div><div className="flex flex-wrap items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={!person.isActive || pendingAction !== null} onClick={() => resetPin(person.id)}>Reset PIN</Button><Button type="button" variant="outline" size="sm" disabled={person.id === currentUser?.id || pendingAction !== null} onClick={() => changeAccess(person, !person.isActive)}>{pendingAction === `access-${person.id}` ? <LoaderCircle className="animate-spin" /> : person.isActive ? <UserX /> : <RotateCcw />}{person.isActive ? 'Revoke' : 'Restore'}</Button><Button type="button" variant="destructive" size="sm" disabled={person.id === currentUser?.id || pendingAction !== null} onClick={() => setDeleteTarget(person)}><Trash2 />Delete</Button></div></div>)}
+        {!staffLoading && !staffLoadError && staff.map(person => <div key={person.id} className={`flex flex-col gap-3 border rounded-xl p-3 sm:flex-row sm:items-center sm:justify-between ${person.isActive ? '' : 'bg-slate-50 opacity-75'}`}><div className="min-w-0"><div className="flex items-center gap-2"><p className="truncate font-semibold text-sm">{person.name || person.email}</p>{!person.isActive && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-600">Revoked</span>}</div><p className="text-xs text-slate-500 capitalize">{person.role}</p></div><div className="flex flex-wrap items-center gap-2"><Button type="button" variant="outline" size="sm" disabled={!person.isActive || pendingAction !== null} onClick={() => { setPinTarget(person); setReplacementPin(''); }}>Reset PIN</Button><Button type="button" variant="outline" size="sm" disabled={person.id === currentUser?.id || pendingAction !== null} onClick={() => changeAccess(person, !person.isActive)}>{pendingAction === `access-${person.id}` ? <LoaderCircle className="animate-spin" /> : person.isActive ? <UserX /> : <RotateCcw />}{person.isActive ? 'Revoke' : 'Restore'}</Button><Button type="button" variant="destructive" size="sm" disabled={person.id === currentUser?.id || pendingAction !== null} onClick={() => setDeleteTarget(person)}><Trash2 />Delete</Button></div></div>)}
       </div>
       </div>
     </div>
@@ -126,5 +131,6 @@ export default function StaffManagementModal({ onClose }: { onClose: () => void 
         </div>
       </div>
     </div>}
+    {pinTarget && <div className="fixed inset-0 z-[110] grid place-items-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="reset-pin-title"><form onSubmit={event => { event.preventDefault(); resetPin(); }} className="w-full max-w-sm rounded-2xl bg-white p-6 text-slate-900 shadow-2xl"><h3 id="reset-pin-title" className="text-lg font-bold">Reset {pinTarget.name || 'staff'} PIN</h3><p className="mt-2 text-sm text-slate-600">Choose a unique 4–6 digit PIN. Existing sessions for this profile will be revoked.</p><div className="mt-4 space-y-1"><Label htmlFor="replacement-pin">New PIN</Label><Input id="replacement-pin" autoFocus type="password" inputMode="numeric" value={replacementPin} onChange={event => setReplacementPin(event.target.value.replace(/\D/g, '').slice(0, 6))} /></div><div className="mt-6 flex justify-end gap-2"><Button type="button" variant="outline" disabled={pendingAction?.startsWith('pin-')} onClick={() => setPinTarget(null)}>Cancel</Button><Button type="submit" disabled={replacementPin.length < 4 || pendingAction?.startsWith('pin-')}>{pendingAction === `pin-${pinTarget.id}` && <LoaderCircle className="animate-spin" />}Update PIN</Button></div></form></div>}
   </div>, document.body);
 }

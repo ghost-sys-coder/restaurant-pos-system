@@ -128,7 +128,7 @@ function AppContent() {
   const pathname = usePathname();
   const { user, isLoaded } = useUser();
   const { orgId } = useClerkAuth();
-  const { terminal, currentUser, loading, platformRole } = useAuth();
+  const { terminal, currentUser, loading, platformRole, workspace } = useAuth();
 
   if (!isLoaded || loading) {
     return (
@@ -138,7 +138,7 @@ function AppContent() {
     );
   }
 
-  if (user && platformRole) return <PlatformClientsScreen />;
+  if (user && platformRole && workspace === 'platform') return <PlatformClientsScreen />;
 
   if (terminal && currentUser) {
     return (

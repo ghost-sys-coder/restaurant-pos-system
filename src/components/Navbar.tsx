@@ -17,6 +17,7 @@ import {
   X,
   ChevronDown,
   ShieldCheck,
+  Settings,
 } from 'lucide-react';
 import { ActiveView } from '../types.ts';
 import { Badge } from '@/components/ui/badge';
@@ -25,7 +26,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 export default function Navbar() {
   const { activeView, setActiveView, orders, tables } = usePos();
-  const { currentUser, lockTerminal, permissions } = useAuth();
+  const { currentUser, lockTerminal, permissions, platformRole, setWorkspace } = useAuth();
   const { user } = useUser();
   const [timeStr, setTimeStr] = useState<string>('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
@@ -90,6 +91,7 @@ export default function Navbar() {
     { view: 'orders', label: 'Orders', icon: ReceiptText },
     { view: 'reports', label: 'Analytics', icon: BarChart3, permission: 'reports.view' },
     { view: 'menu_manager', label: 'Menu', icon: BookOpen, permission: 'menu.manage' },
+    { view: 'settings', label: 'Settings', icon: Settings, permission: 'staff.manage' },
   ] as Array<{ view: ActiveView; label: string; icon: any; permission?: string }>).filter(item => !item.permission || permissions.includes(item.permission));
 
   const handleNavClick = (view: ActiveView) => {
@@ -237,6 +239,7 @@ export default function Navbar() {
               </div>
 
               {permissions.includes('staff.manage') && <button onClick={() => { setProfileDropdownOpen(false); setStaffManagerOpen(true); }} className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer"><ShieldCheck className="w-3.5 h-3.5" /><span>Manage Staff PINs</span></button>}
+              {platformRole && <button onClick={() => { setProfileDropdownOpen(false); setWorkspace('platform'); }} className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 transition cursor-pointer"><ShieldCheck className="w-3.5 h-3.5" /><span>Platform console</span></button>}
               <button
                 id="dropdown-signout"
                 onClick={() => {

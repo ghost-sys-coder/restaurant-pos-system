@@ -3,36 +3,53 @@ import { usePos } from '../context/PosContext.tsx';
 import { formatCurrency } from '../utils/formatters.ts';
 import { X, Users, CreditCard, Banknote, CheckCircle2 } from 'lucide-react';
 import { Order } from '../types.ts';
+import { splitAmounts } from '../domain/posRules.ts';
 
 export default function SplitBillModal({
   order,
   onClose,
-  onPaidShare,
+  onPayShare,
+  onComplete,
 }: {
   order: Order | null;
   onClose: () => void;
-  onPaidShare?: () => void;
+  onPayShare: (amount: number, method: string, idempotencyKey: string) => Promise<Order | null>;
+  onComplete: (order: Order) => void;
 }) {
   const { splitBillModalOpen, setSplitBillModalOpen, total, showToast } = usePos();
   const [splitCount, setSplitCount] = useState<number>(2);
   const [paidShares, setPaidShares] = useState<number[]>([]);
+  const [busyShare, setBusyShare] = useState<number | null>(null);
+  const [error, setError] = useState('');
 
   if (!splitBillModalOpen) return null;
 
-  const targetTotal = order ? order.total : total;
-  const perPersonAmount = Math.ceil(targetTotal / splitCount);
+  const alreadyPaid = order?.payments?.filter(payment => payment.status === 'success').reduce((sum, payment) => sum + payment.amount, 0) || 0;
+  const targetTotal = order ? Math.max(0, order.total - alreadyPaid) : total;
+  const shares = targetTotal > 0 ? splitAmounts(targetTotal, splitCount) : Array(splitCount).fill(0);
+  const baseShare = Math.min(...shares);
+  const shareAmount = (index: number) => shares[index];
 
-  const handlePayShare = (index: number, method: string) => {
-    if (!paidShares.includes(index)) {
+  const handlePayShare = async (index: number, method: string) => {
+    if (!paidShares.includes(index) && busyShare === null) {
+      setBusyShare(index); setError('');
+      try {
+        const updated = await onPayShare(shareAmount(index), method, crypto.randomUUID());
+        if (!updated) throw new Error('Payment was not recorded');
       setPaidShares((prev) => [...prev, index]);
-      showToast(`Guest #${index + 1} paid ${formatCurrency(perPersonAmount)} via ${method}`);
+        showToast(`Guest #${index + 1} paid ${formatCurrency(shareAmount(index))} via ${method}`);
+        if (updated.paymentStatus === 'paid') {
+          setSplitBillModalOpen(false); onClose(); onComplete(updated);
+        }
+      } catch (paymentError: any) {
+        setError(paymentError?.message || 'Share payment failed');
+      } finally { setBusyShare(null); }
     }
   };
 
   const handleAllPaid = () => {
     showToast('All split shares have been fully settled!');
     setSplitBillModalOpen(false);
-    if (onPaidShare) onPaidShare();
     onClose();
   };
 
@@ -96,7 +113,7 @@ export default function SplitBillModal({
           <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-600">Each Guest Pays:</span>
             <span className="text-lg font-extrabold font-mono text-indigo-600">
-              {formatCurrency(perPersonAmount)}
+              {formatCurrency(baseShare)}–{formatCurrency(baseShare + (targetTotal % splitCount ? 1 : 0))}
             </span>
           </div>
 
@@ -126,7 +143,7 @@ export default function SplitBillModal({
                     <div>
                       <p className="text-xs font-bold">Guest {idx + 1}</p>
                       <p className="text-[11px] font-mono text-slate-500">
-                        {formatCurrency(perPersonAmount)}
+                        {formatCurrency(shareAmount(idx))}
                       </p>
                     </div>
                   </div>
@@ -139,13 +156,15 @@ export default function SplitBillModal({
                   ) : (
                     <div className="flex items-center gap-1.5">
                       <button
+                        disabled={busyShare !== null}
                         onClick={() => handlePayShare(idx, 'card')}
                         className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition cursor-pointer border border-slate-200"
                       >
                         <CreditCard className="w-3 h-3 text-indigo-600" />
-                        <span>Card</span>
+                        <span>{busyShare === idx ? 'Saving…' : 'Card'}</span>
                       </button>
                       <button
+                        disabled={busyShare !== null}
                         onClick={() => handlePayShare(idx, 'cash')}
                         className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition cursor-pointer border border-slate-200"
                       >
@@ -158,6 +177,7 @@ export default function SplitBillModal({
               );
             })}
           </div>
+          {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">{error}</p>}
         </div>
 
         {/* Footer */}

@@ -1,6 +1,10 @@
 // Centralized API and Fetch interceptor for Clerk authentication
 let tokenProvider: (() => Promise<string | null>) | null = null;
 
+export class ApiError extends Error {
+  constructor(message: string, public status: number, public code?: string) { super(message); }
+}
+
 export function setAuthTokenProvider(provider: () => Promise<string | null>) {
   tokenProvider = provider;
 }
@@ -55,11 +59,16 @@ window.fetch = async function (input: RequestInfo | URL, init: RequestInit = {})
       }
     }
 
-    return originalFetch(input, {
+    const response = await originalFetch(input, {
       ...init,
       credentials: init.credentials || 'same-origin',
       headers,
     });
+    if (response.status === 401) {
+      const body = await response.clone().json().catch(() => ({}));
+      if (body.code === 'STAFF_SESSION_REQUIRED' || body.code === 'TERMINAL_REQUIRED') window.dispatchEvent(new CustomEvent('vc:access-required', { detail: body.code }));
+    }
+    return response;
   }
 
   return originalFetch(input, init);
@@ -67,4 +76,21 @@ window.fetch = async function (input: RequestInfo | URL, init: RequestInit = {})
 
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   return window.fetch(input, init);
+}
+
+export async function apiJson<T>(path: string, init: RequestInit = {}, retries = init.method && init.method !== 'GET' ? 0 : 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await apiFetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers || {}) } });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new ApiError(body.error || 'Request failed', response.status, body.code);
+      return body as T;
+    } catch (error) {
+      lastError = error;
+      if (error instanceof ApiError || attempt === retries) throw error;
+      await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+  throw lastError;
 }

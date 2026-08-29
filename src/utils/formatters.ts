@@ -1,11 +1,17 @@
+let activeCurrency = 'UGX';
+
+export function setCurrency(currency: string) {
+  if (/^[A-Z]{3}$/.test(currency)) activeCurrency = currency;
+}
+
 export function formatCurrency(amount: number | undefined | null): string {
   if (amount === undefined || amount === null || isNaN(amount)) {
-    return 'UGX 0';
+    return `${activeCurrency} 0`;
   }
   const formatted = new Intl.NumberFormat('en-UG', {
     maximumFractionDigits: 0,
   }).format(Math.round(amount));
-  return `UGX ${formatted}`;
+  return `${activeCurrency} ${formatted}`;
 }
 
 export function formatDate(dateString: string | undefined | null): string {

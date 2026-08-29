@@ -23,7 +23,7 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
     playBeep(800, 0.04);
     const nextStatus =
       currentStatus === 'ready'
-        ? 'sent'
+        ? 'served'
         : currentStatus === 'preparing'
         ? 'ready'
         : 'preparing';

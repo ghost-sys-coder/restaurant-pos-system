@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import SplitBillModal from './SplitBillModal.tsx';
 import { formatCurrency } from '../utils/formatters.ts';
@@ -21,8 +21,7 @@ export default function PaymentModal() {
     paymentModalOpen,
     setPaymentModalOpen,
     total,
-    tip,
-    orders,
+    checkoutOrder,
     processPayment,
     setActiveReceiptOrder,
     setReceiptModalOpen,
@@ -34,26 +33,34 @@ export default function PaymentModal() {
   const [cashTendered, setCashTendered] = useState<number>(0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [paymentSuccess, setPaymentSuccess] = useState<boolean>(false);
+  const [paymentError, setPaymentError] = useState<string>('');
+  const [paymentKey, setPaymentKey] = useState(() => crypto.randomUUID());
+
+  useEffect(() => {
+    if (paymentModalOpen) { setPaymentKey(crypto.randomUUID()); setPaymentError(''); setPaymentSuccess(false); }
+  }, [paymentModalOpen, checkoutOrder?.id]);
 
   if (!paymentModalOpen) return null;
 
-  // Find the latest active order
-  const targetOrder = orders.find(
-    (o) => o.status === 'active' || o.status === 'preparing' || o.status === 'ready'
-  ) || orders[0];
+  const targetOrder = checkoutOrder;
 
-  const orderTotal = targetOrder ? targetOrder.total : total;
+  const paidAmount = targetOrder?.payments?.filter(payment => payment.status === 'success').reduce((sum, payment) => sum + payment.amount, 0) || 0;
+  const orderTotal = targetOrder ? Math.max(0, targetOrder.total - paidAmount) : total;
 
   const handleProcessPayment = async () => {
     if (!targetOrder) return;
+    if (paymentMethod === 'cash' && cashTendered < orderTotal) { setPaymentError('Cash tendered must cover the outstanding balance.'); return; }
     setIsProcessing(true);
+    setPaymentError('');
 
     try {
       const updatedOrder = await processPayment(
         targetOrder.id,
         orderTotal,
         paymentMethod,
-        targetOrder.tip || tip
+        0,
+        paymentMethod === 'cash' ? cashTendered : orderTotal,
+        paymentKey,
       );
 
       if (updatedOrder) {
@@ -74,8 +81,9 @@ export default function PaymentModal() {
           setReceiptModalOpen(true);
         }, 1200);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setPaymentError(err?.message || 'Payment could not be processed');
       setIsProcessing(false);
     }
   };
@@ -157,6 +165,7 @@ export default function PaymentModal() {
                   );
                 })}
               </div>
+              {paymentError && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-700">{paymentError}</p>}
 
               {/* CARD SIMULATOR */}
               {paymentMethod === 'card' && (
@@ -253,7 +262,7 @@ export default function PaymentModal() {
 
             <button
               id="btn-confirm-terminal-payment"
-              disabled={isProcessing || isSubmitting}
+              disabled={isProcessing || isSubmitting || !targetOrder || (paymentMethod === 'cash' && cashTendered < orderTotal)}
               onClick={handleProcessPayment}
               className={`flex-1 py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider transition flex items-center justify-center gap-2 shadow-xs ${
                 !isProcessing && !isSubmitting
@@ -277,8 +286,14 @@ export default function PaymentModal() {
       <SplitBillModal
         order={targetOrder}
         onClose={() => setSplitBillModalOpen(false)}
-        onPaidShare={() => {
-          handleProcessPayment();
+        onPayShare={async (amount, method, idempotencyKey) => {
+          if (!targetOrder) return null;
+          return processPayment(targetOrder.id, amount, method, 0, amount, idempotencyKey);
+        }}
+        onComplete={(updatedOrder) => {
+          setPaymentModalOpen(false);
+          setActiveReceiptOrder(updatedOrder);
+          setReceiptModalOpen(true);
         }}
       />
     </div>

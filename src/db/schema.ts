@@ -9,6 +9,9 @@ export const restaurants = pgTable('restaurants', {
   name: text('name').notNull(),
   status: text('status').default('active').notNull(),
   createdByClerkUserId: text('created_by_clerk_user_id'),
+  currency: text('currency').default('UGX').notNull(),
+  taxRateBps: integer('tax_rate_bps').default(0).notNull(),
+  receiptName: text('receipt_name'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -25,19 +28,22 @@ export const locations = pgTable('locations', {
 // Users / Staff
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
-  restaurantId: integer('restaurant_id').references(() => restaurants.id),
-  locationId: integer('location_id').references(() => locations.id),
-  clerkUserId: text('uid').unique(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  clerkUserId: text('uid'),
   email: text('email'),
   name: text('name'),
   role: text('role').default('cashier'), // 'admin' | 'manager' | 'cashier' | 'waiter' | 'kitchen'
   pinHash: text('pin_hash'),
   pinVersion: integer('pin_version').default(1).notNull(),
+  failedPinAttempts: integer('failed_pin_attempts').default(0).notNull(),
+  pinLockedUntil: timestamp('pin_locked_until'),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => [
   index('users_restaurant_location_idx').on(table.restaurantId, table.locationId),
+  uniqueIndex('users_clerk_restaurant_unique').on(table.clerkUserId, table.restaurantId),
 ]);
 
 export const terminals = pgTable('terminals', {
@@ -92,7 +98,7 @@ export const auditEvents = pgTable('audit_events', {
 // Categories
 export const categories = pgTable('categories', {
   id: serial('id').primaryKey(),
-  restaurantId: integer('restaurant_id').references(() => restaurants.id),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
   name: text('name').notNull(),
   icon: text('icon').default('Utensils'),
   color: text('color').default('amber'),
@@ -103,7 +109,7 @@ export const categories = pgTable('categories', {
 // Menu Items
 export const menuItems = pgTable('menu_items', {
   id: serial('id').primaryKey(),
-  restaurantId: integer('restaurant_id').references(() => restaurants.id),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
   categoryId: integer('category_id').references(() => categories.id),
   name: text('name').notNull(),
   description: text('description'),
@@ -115,12 +121,13 @@ export const menuItems = pgTable('menu_items', {
   allergens: text('allergens'),
   optionsJson: text('options_json'), // Customization options
   createdAt: timestamp('created_at').defaultNow(),
+  archivedAt: timestamp('archived_at'),
 });
 
 // Restaurant Tables
 export const restaurantTables = pgTable('restaurant_tables', {
   id: serial('id').primaryKey(),
-  locationId: integer('location_id').references(() => locations.id),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
   tableNumber: text('table_number').notNull(),
   capacity: integer('capacity').default(4),
   section: text('section').default('Main Dining'), // Main Dining, Patio, Bar, VIP
@@ -134,8 +141,8 @@ export const restaurantTables = pgTable('restaurant_tables', {
 // Orders
 export const orders = pgTable('orders', {
   id: serial('id').primaryKey(),
-  restaurantId: integer('restaurant_id').references(() => restaurants.id),
-  locationId: integer('location_id').references(() => locations.id),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
   orderNumber: text('order_number').notNull(),
   orderType: text('order_type').default('dine-in'), // dine-in, takeout, delivery, bar
   tableId: integer('table_id').references(() => restaurantTables.id),
@@ -153,6 +160,7 @@ export const orders = pgTable('orders', {
   paymentMethod: text('payment_method'), // cash, card, digital, split
   notes: text('notes'),
   guestCount: integer('guest_count').default(1),
+  version: integer('version').default(1).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   completedAt: timestamp('completed_at'),
 });
@@ -182,6 +190,8 @@ export const payments = pgTable('payments', {
   status: text('status').default('success'),
   processedBy: text('processed_by'),
   processedByStaffId: integer('processed_by_staff_id').references(() => users.id),
+  idempotencyKey: text('idempotency_key').unique(),
+  tenderedAmount: integer('tendered_amount'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 

@@ -1,24 +1,25 @@
 import { Request, Response, NextFunction } from 'express';
 import { clerkClient, getAuth } from '@clerk/express';
 import { findStaffSession, findTerminalByToken } from '../db/access.ts';
-import { getUserByClerkId } from '../db/users.ts';
+import { getUserByClerkOrg } from '../db/users.ts';
 import { STAFF_COOKIE, TERMINAL_COOKIE, readCookies } from '../auth/security.ts';
 import { PlatformRole, Role } from '../types.ts';
 import type { terminals, users } from '../db/schema.ts';
 
 export type Permission =
   | 'orders.read' | 'orders.write' | 'orders.cancel'
+  | 'discounts.apply'
   | 'payments.process' | 'payments.refund'
   | 'tables.manage' | 'kitchen.manage'
   | 'menu.manage' | 'reports.view'
   | 'staff.manage' | 'terminals.manage';
 
 const rolePermissions: Record<Role, Permission[]> = {
-  restaurant_owner: ['orders.read', 'orders.write', 'orders.cancel', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
-  restaurant_admin: ['orders.read', 'orders.write', 'orders.cancel', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
-  general_manager: ['orders.read', 'orders.write', 'orders.cancel', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
+  restaurant_owner: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
+  restaurant_admin: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
+  general_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
   accountant: ['orders.read', 'reports.view'],
-  shift_manager: ['orders.read', 'orders.write', 'orders.cancel', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'reports.view'],
+  shift_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'reports.view'],
   cashier: ['orders.read', 'orders.write', 'payments.process', 'tables.manage'],
   server: ['orders.read', 'orders.write', 'tables.manage'],
   bartender: ['orders.read', 'orders.write', 'payments.process', 'tables.manage'],
@@ -44,7 +45,7 @@ export const attachClerkAuth = async (req: AuthRequest, _res: Response, next: Ne
       req.authUserId = auth.userId;
       req.clerkOrgId = auth.orgId;
       req.clerkOrgRole = auth.orgRole;
-      const user = await getUserByClerkId(auth.userId);
+      const user = auth.orgId ? await getUserByClerkOrg(auth.userId, auth.orgId) : null;
       if (user) {
         req.userRole = user.role as Role;
       }
