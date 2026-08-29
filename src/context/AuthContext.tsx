@@ -16,7 +16,7 @@ interface AuthContextType {
   platformRole: PlatformRole | null;
   workspace: 'platform' | 'restaurant';
   setWorkspace: (workspace: 'platform' | 'restaurant') => void;
-  enrollTerminal: (name: string, pin: string, type?: string) => Promise<void>;
+  enrollTerminal: (name: string, pin: string, type?: string, terminalId?: number) => Promise<void>;
   loginWithPin: (staffId: number, pin: string) => Promise<void>;
   lockTerminal: () => Promise<void>;
   refreshAccess: (options?: { silent?: boolean }) => Promise<void>;
@@ -88,10 +88,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { if (isLoaded) refreshAccess(); }, [isLoaded, isSignedIn]);
 
-  const enrollTerminal = async (name: string, pin: string, type = 'register') => {
+  const enrollTerminal = async (name: string, pin: string, type = 'register', terminalId?: number) => {
     setError(null);
     const token = await getToken();
-    const data = await apiJson('/api/access/terminal/enroll', { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, body: JSON.stringify({ name, pin, type }) });
+    const data = await apiJson('/api/access/terminal/enroll', { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, body: JSON.stringify({ name, pin, type, terminalId }) });
     setTerminal(data.terminal);
     await loadTerminal();
   };

@@ -796,14 +796,19 @@ async function ensureAccountForStaff(staffId) {
   if (staff[0].restaurantId && staff[0].locationId) return staff[0];
   throw new Error("Staff profile is not attached to a restaurant organization");
 }
-async function authorizeTerminal(staffId, name, pin, type = "register") {
+async function listLocationTerminals(locationId) {
+  return db.select({ id: terminals.id, name: terminals.name, type: terminals.type, isActive: terminals.isActive }).from(terminals).where(and3(eq3(terminals.locationId, locationId), eq3(terminals.isActive, true), isNull2(terminals.revokedAt))).orderBy(terminals.name);
+}
+async function authorizeTerminal(staffId, name, pin, type = "register", requestedTerminalId) {
   const staff = await ensureAccountForStaff(staffId);
   await assertUniqueLocationPin(staff.locationId, pin, staffId);
   const pinHash = await hashPin(pin);
   const rawToken = newOpaqueToken();
   return withTransaction(async (transaction) => {
     await transaction.update(users).set({ pinHash, pinVersion: sql3`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(users.id, staff.id));
-    const existing = (await transaction.select().from(terminals).where(and3(eq3(terminals.locationId, staff.locationId), eq3(terminals.name, name))).limit(1))[0];
+    const locationTerminals = await transaction.select().from(terminals).where(and3(eq3(terminals.locationId, staff.locationId), eq3(terminals.isActive, true), isNull2(terminals.revokedAt)));
+    const existing = requestedTerminalId ? locationTerminals.find((terminal2) => terminal2.id === requestedTerminalId) : locationTerminals.find((terminal2) => terminal2.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (locationTerminals.length && !existing) throw new Error("Select an existing terminal. New terminal creation is disabled while this location already has terminals.");
     const terminal = existing ? (await transaction.update(terminals).set({ credentialHash: hashToken(rawToken), type, enrolledByStaffId: staff.id, isActive: true, revokedAt: null, lastSeenAt: /* @__PURE__ */ new Date() }).where(eq3(terminals.id, existing.id)).returning())[0] : (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId, locationId: staff.locationId, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];
     if (existing) await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(and3(eq3(staffSessions.terminalId, terminal.id), isNull2(staffSessions.revokedAt)));
     await transaction.insert(auditEvents).values({ restaurantId: terminal.restaurantId, locationId: terminal.locationId, terminalId: terminal.id, actorStaffId: staff.id, action: existing ? "terminal.reauthorized" : "terminal.enrolled", entityType: "terminal", entityId: String(terminal.id) });
@@ -1281,11 +1286,22 @@ app.post("/api/access/terminal/enroll", requireStrictAuth, async (req, res) => {
     const pin = String(req.body.pin || "");
     if (name.length < 2 || name.length > 60) return res.status(400).json({ error: "Terminal name must contain 2 to 60 characters" });
     if (!validatePinFormat(pin)) return res.status(400).json({ error: "Administrator PIN must contain 4 to 6 digits" });
-    const { terminal, rawToken } = await authorizeTerminal(clerkStaff.id, name, pin, String(req.body.type || "register"));
+    const requestedTerminalId = req.body.terminalId == null ? void 0 : Number(req.body.terminalId);
+    if (requestedTerminalId !== void 0 && (!Number.isInteger(requestedTerminalId) || requestedTerminalId < 1)) return res.status(400).json({ error: "Select a valid terminal" });
+    const { terminal, rawToken } = await authorizeTerminal(clerkStaff.id, name, pin, String(req.body.type || "register"), requestedTerminalId);
     res.setHeader("Set-Cookie", sessionCookie(TERMINAL_COOKIE, rawToken, 60 * 60 * 24 * 90));
     res.status(201).json({ terminal: publicTerminal(terminal) });
   } catch (error) {
     res.status(400).json({ error: error?.message || "Unable to enroll terminal" });
+  }
+});
+app.get("/api/access/terminal/options", requireStrictAuth, async (req, res) => {
+  try {
+    const clerkStaff = await getOrCreateUserFromRequest(req);
+    if (!["restaurant_owner", "restaurant_admin", "general_manager"].includes(String(clerkStaff.role))) return res.status(403).json({ error: "Your restaurant role cannot authorize terminals" });
+    res.json(await listLocationTerminals(clerkStaff.locationId));
+  } catch (error) {
+    res.status(400).json({ error: error?.message || "Unable to load existing terminals" });
   }
 });
 app.get("/api/access/terminal", requireTerminal, (req, res) => {

@@ -26,14 +26,24 @@ export async function enrollTerminal(staffId: number, name: string, type = 'regi
   return { terminal, rawToken };
 }
 
-export async function authorizeTerminal(staffId: number, name: string, pin: string, type = 'register') {
+export async function listLocationTerminals(locationId: number) {
+  return db.select({ id: terminals.id, name: terminals.name, type: terminals.type, isActive: terminals.isActive }).from(terminals)
+    .where(and(eq(terminals.locationId, locationId), eq(terminals.isActive, true), isNull(terminals.revokedAt)))
+    .orderBy(terminals.name);
+}
+
+export async function authorizeTerminal(staffId: number, name: string, pin: string, type = 'register', requestedTerminalId?: number) {
   const staff = await ensureAccountForStaff(staffId);
   await assertUniqueLocationPin(staff.locationId, pin, staffId);
   const pinHash = await hashPin(pin);
   const rawToken = newOpaqueToken();
   return withTransaction(async transaction => {
     await transaction.update(users).set({ pinHash, pinVersion: sql`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: new Date() }).where(eq(users.id, staff.id));
-    const existing = (await transaction.select().from(terminals).where(and(eq(terminals.locationId, staff.locationId!), eq(terminals.name, name))).limit(1))[0];
+    const locationTerminals = await transaction.select().from(terminals).where(and(eq(terminals.locationId, staff.locationId!), eq(terminals.isActive, true), isNull(terminals.revokedAt)));
+    const existing = requestedTerminalId
+      ? locationTerminals.find(terminal => terminal.id === requestedTerminalId)
+      : locationTerminals.find(terminal => terminal.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (locationTerminals.length && !existing) throw new Error('Select an existing terminal. New terminal creation is disabled while this location already has terminals.');
     const terminal = existing
       ? (await transaction.update(terminals).set({ credentialHash: hashToken(rawToken), type, enrolledByStaffId: staff.id, isActive: true, revokedAt: null, lastSeenAt: new Date() }).where(eq(terminals.id, existing.id)).returning())[0]
       : (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId!, locationId: staff.locationId!, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];

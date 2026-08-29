@@ -24,7 +24,7 @@ import {
 import { getAllUsers, getUserById, permanentlyDeleteUser, setUserActive, updateUserRole } from '../db/users.ts';
 import { AuthRequest, attachClerkAuth, getPlatformRole, permissionsForRole, requirePermission, requirePlatformRole, requireStaffSession, requireStrictAuth, requireTerminal } from '../middleware/auth.ts';
 import { clerkMiddleware, clerkClient, getAuth } from '@clerk/express';
-import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, listTerminalStaff, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
+import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, listLocationTerminals, listTerminalStaff, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
 import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE, validatePinFormat } from '../auth/security.ts';
 import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
@@ -204,12 +204,22 @@ app.post('/api/access/terminal/enroll', requireStrictAuth, async (req: AuthReque
     const pin = String(req.body.pin || '');
     if (name.length < 2 || name.length > 60) return res.status(400).json({ error: 'Terminal name must contain 2 to 60 characters' });
     if (!validatePinFormat(pin)) return res.status(400).json({ error: 'Administrator PIN must contain 4 to 6 digits' });
-    const { terminal, rawToken } = await authorizeTerminal(clerkStaff.id, name, pin, String(req.body.type || 'register'));
+    const requestedTerminalId = req.body.terminalId == null ? undefined : Number(req.body.terminalId);
+    if (requestedTerminalId !== undefined && (!Number.isInteger(requestedTerminalId) || requestedTerminalId < 1)) return res.status(400).json({ error: 'Select a valid terminal' });
+    const { terminal, rawToken } = await authorizeTerminal(clerkStaff.id, name, pin, String(req.body.type || 'register'), requestedTerminalId);
     res.setHeader('Set-Cookie', sessionCookie(TERMINAL_COOKIE, rawToken, 60 * 60 * 24 * 90));
     res.status(201).json({ terminal: publicTerminal(terminal) });
   } catch (error: any) {
     res.status(400).json({ error: error?.message || 'Unable to enroll terminal' });
   }
+});
+
+app.get('/api/access/terminal/options', requireStrictAuth, async (req: AuthRequest, res) => {
+  try {
+    const clerkStaff = await getOrCreateUserFromRequest(req);
+    if (!['restaurant_owner', 'restaurant_admin', 'general_manager'].includes(String(clerkStaff.role))) return res.status(403).json({ error: 'Your restaurant role cannot authorize terminals' });
+    res.json(await listLocationTerminals(clerkStaff.locationId));
+  } catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to load existing terminals' }); }
 });
 
 app.get('/api/access/terminal', requireTerminal, (req: AuthRequest, res) => {
