@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import { MenuItem } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
-import { X, Check, BookOpen, ImagePlus, LoaderCircle, Trash2 } from 'lucide-react';
+import { X, Check, BookOpen, Copy, ImagePlus, LoaderCircle, Trash2 } from 'lucide-react';
 
 export default function MenuItemEditModal({
   item,
@@ -33,6 +33,7 @@ export default function MenuItemEditModal({
     item ? item.isAvailable : true
   );
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [formError, setFormError] = useState('');
 
   useEffect(() => () => { if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
   useEffect(() => {
@@ -50,7 +51,7 @@ export default function MenuItemEditModal({
     e.preventDefault();
     if (!name.trim() || !categoryId) { showToast('Add and select a category before saving this item'); return; }
 
-    setIsSubmitting(true);
+    setIsSubmitting(true); setFormError('');
     const parsedPrice = Math.round(parseFloat(priceUGX)) || 25000;
 
     const payload = new FormData();
@@ -74,7 +75,7 @@ export default function MenuItemEditModal({
       await fetchData();
       onClose();
     } catch (err: any) {
-      showToast('Error saving item: ' + err.message);
+      setFormError(err?.message || 'Failed to save menu item');
     } finally {
       setIsSubmitting(false);
     }
@@ -256,6 +257,8 @@ export default function MenuItemEditModal({
               />
             </button>
           </div>
+
+          {formError && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-800"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-xs font-bold">Menu item could not be saved</p><p className="mt-1 select-text break-words font-mono text-[11px] leading-5">{formError}</p></div><button type="button" onClick={() => navigator.clipboard.writeText(formError)} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-rose-200 bg-white px-2 py-1.5 text-[11px] font-bold hover:bg-rose-100"><Copy className="size-3" />Copy</button></div></div>}
 
           <div className="pt-2 flex gap-2">
             <button
