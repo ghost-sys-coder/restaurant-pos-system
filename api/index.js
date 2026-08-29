@@ -914,6 +914,18 @@ async function setStaffPin(staffId, pin) {
     return updated[0] ?? null;
   });
 }
+async function recoverRestaurantOwnerPin(staffId, pin) {
+  const target = await ensureAccountForStaff(staffId);
+  if (target.role !== "restaurant_owner") throw new Error("Only a restaurant owner can recover their own PIN");
+  await assertUniqueLocationPin(target.locationId, pin, target.id);
+  const pinHash = await hashPin(pin);
+  return withTransaction(async (transaction) => {
+    const updated = (await transaction.update(users).set({ pinHash, pinVersion: sql3`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(users.id, target.id)).returning())[0];
+    await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(and3(eq3(staffSessions.staffId, target.id), isNull2(staffSessions.revokedAt)));
+    await transaction.insert(auditEvents).values({ restaurantId: target.restaurantId, locationId: target.locationId, actorStaffId: target.id, action: "owner.pin_recovered", entityType: "staff", entityId: String(target.id), metadata: { clerkVerified: true } });
+    return updated;
+  });
+}
 async function createPinStaff(input) {
   await assertUniqueLocationPin(input.locationId, input.pin);
   const pinHash = await hashPin(input.pin);
@@ -1315,6 +1327,20 @@ app.get("/api/access/terminal/options", requireStrictAuth, async (req, res) => {
     res.json(await listLocationTerminals(clerkStaff.locationId));
   } catch (error) {
     res.status(400).json({ error: error?.message || "Unable to load existing terminals" });
+  }
+});
+app.post("/api/access/owner-pin/recover", requireStrictAuth, async (req, res) => {
+  try {
+    const { orgRole } = getAuth2(req);
+    if (appRoleForClerkRole(orgRole) !== "restaurant_owner") return res.status(403).json({ error: "Only the active Clerk restaurant owner can recover this PIN" });
+    const pin = String(req.body.pin || "");
+    if (!validatePinFormat(pin)) return res.status(400).json({ error: "New PIN must contain 4 to 6 digits" });
+    const clerkStaff = await getOrCreateUserFromRequest(req);
+    if (clerkStaff.role !== "restaurant_owner") return res.status(403).json({ error: "The owner membership is not synchronized" });
+    await recoverRestaurantOwnerPin(clerkStaff.id, pin);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: error?.message || "Unable to recover the owner PIN" });
   }
 });
 app.get("/api/access/terminal", requireTerminal, (req, res) => {

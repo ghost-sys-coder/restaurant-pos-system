@@ -24,7 +24,7 @@ import {
 import { getAllUsers, getUserById, permanentlyDeleteUser, setUserActive, updateUserRole } from '../db/users.ts';
 import { AuthRequest, attachClerkAuth, getPlatformRole, permissionsForRole, requirePermission, requirePlatformRole, requireStaffSession, requireStrictAuth, requireTerminal } from '../middleware/auth.ts';
 import { clerkMiddleware, clerkClient, getAuth } from '@clerk/express';
-import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, listLocationTerminals, listTerminalStaff, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
+import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, listLocationTerminals, listTerminalStaff, recoverRestaurantOwnerPin, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
 import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE, validatePinFormat } from '../auth/security.ts';
 import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
@@ -220,6 +220,19 @@ app.get('/api/access/terminal/options', requireStrictAuth, async (req: AuthReque
     if (!['restaurant_owner', 'restaurant_admin', 'general_manager'].includes(String(clerkStaff.role))) return res.status(403).json({ error: 'Your restaurant role cannot authorize terminals' });
     res.json(await listLocationTerminals(clerkStaff.locationId));
   } catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to load existing terminals' }); }
+});
+
+app.post('/api/access/owner-pin/recover', requireStrictAuth, async (req: AuthRequest, res) => {
+  try {
+    const { orgRole } = getAuth(req);
+    if (appRoleForClerkRole(orgRole) !== 'restaurant_owner') return res.status(403).json({ error: 'Only the active Clerk restaurant owner can recover this PIN' });
+    const pin = String(req.body.pin || '');
+    if (!validatePinFormat(pin)) return res.status(400).json({ error: 'New PIN must contain 4 to 6 digits' });
+    const clerkStaff = await getOrCreateUserFromRequest(req);
+    if (clerkStaff.role !== 'restaurant_owner') return res.status(403).json({ error: 'The owner membership is not synchronized' });
+    await recoverRestaurantOwnerPin(clerkStaff.id, pin);
+    res.json({ success: true });
+  } catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to recover the owner PIN' }); }
 });
 
 app.get('/api/access/terminal', requireTerminal, (req: AuthRequest, res) => {

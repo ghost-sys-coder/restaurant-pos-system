@@ -165,6 +165,19 @@ export async function setStaffPin(staffId: number, pin: string) {
   });
 }
 
+export async function recoverRestaurantOwnerPin(staffId: number, pin: string) {
+  const target = await ensureAccountForStaff(staffId);
+  if (target.role !== 'restaurant_owner') throw new Error('Only a restaurant owner can recover their own PIN');
+  await assertUniqueLocationPin(target.locationId, pin, target.id);
+  const pinHash = await hashPin(pin);
+  return withTransaction(async transaction => {
+    const updated = (await transaction.update(users).set({ pinHash, pinVersion: sql`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: new Date() }).where(eq(users.id, target.id)).returning())[0];
+    await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(and(eq(staffSessions.staffId, target.id), isNull(staffSessions.revokedAt)));
+    await transaction.insert(auditEvents).values({ restaurantId: target.restaurantId!, locationId: target.locationId!, actorStaffId: target.id, action: 'owner.pin_recovered', entityType: 'staff', entityId: String(target.id), metadata: { clerkVerified: true } });
+    return updated;
+  });
+}
+
 export async function createPinStaff(input: { restaurantId: number; locationId: number; name: string; role: string; pin: string }) {
   await assertUniqueLocationPin(input.locationId, input.pin);
   const pinHash = await hashPin(input.pin);

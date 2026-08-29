@@ -56,6 +56,11 @@ export function TerminalSetupScreen() {
   const [options, setOptions] = useState<Array<{ id: number; name: string; type: string }>>([]);
   const [selectedTerminalId, setSelectedTerminalId] = useState<number | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(true);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
 
   useEffect(() => {
     fetch('/api/access/terminal/options').then(async response => {
@@ -76,6 +81,18 @@ export function TerminalSetupScreen() {
   };
 
   const reconnecting = options.length > 0;
+  const recoverPin = async (event: React.FormEvent) => {
+    event.preventDefault(); setRecoveryError('');
+    if (newPin.length < 4 || newPin !== confirmPin) { setRecoveryError(newPin !== confirmPin ? 'PIN confirmation does not match' : 'PIN must contain 4 to 6 digits'); return; }
+    setRecoveryBusy(true);
+    try {
+      const response = await fetch('/api/access/owner-pin/recover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin: newPin }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Unable to reset PIN');
+      setPin(newPin); setRecoveryOpen(false); setNewPin(''); setConfirmPin(''); setMessage('Owner PIN reset. Click Reconnect terminal to continue.');
+    } catch (error: any) { setRecoveryError(error?.message || 'Unable to reset PIN'); }
+    finally { setRecoveryBusy(false); }
+  };
   return <main className="min-h-screen bg-slate-950 text-white grid place-items-center p-6"><form onSubmit={submit} className="w-full max-w-md rounded-3xl bg-white text-slate-900 p-7 shadow-2xl">
     <div className="w-12 h-12 rounded-2xl bg-indigo-600 text-white grid place-items-center mb-6"><MonitorSmartphone /></div>
     <h1 className="text-2xl font-bold">{reconnecting ? 'Reconnect this terminal' : 'Set up this terminal'}</h1>
@@ -86,8 +103,9 @@ export function TerminalSetupScreen() {
     <div className="space-y-2 mb-5"><Label htmlFor="admin-pin">{reconnecting ? 'Administrator PIN' : 'Create your administrator PIN'}</Label><Input id="admin-pin" value={pin} onChange={event => setPin(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" type="password" placeholder="4–6 digits" /></div>
     <div aria-live="polite" aria-atomic="true">{message && <p role="alert" className="text-sm font-medium text-rose-700 mb-4">{message}</p>}</div>
     <Button type="submit" className="w-full" size="lg" disabled={loadingOptions || busy || name.trim().length < 2 || pin.length < 4 || (reconnecting && !selectedTerminalId)}>{busy ? 'Authorizing terminal…' : reconnecting ? 'Reconnect terminal' : 'Authorize terminal'}</Button>
-    <button type="button" onClick={() => signOut()} className="w-full text-xs text-slate-500 mt-4 hover:text-slate-900">Use a different administrator</button>
-  </form></main>;
+    {reconnecting && <button type="button" onClick={() => { setRecoveryOpen(true); setRecoveryError(''); }} className="w-full text-xs font-semibold text-indigo-700 mt-4 hover:text-indigo-900">Forgot administrator PIN?</button>}
+    <button type="button" onClick={() => signOut()} className="w-full text-xs text-slate-500 mt-3 hover:text-slate-900">Use a different administrator</button>
+  </form>{recoveryOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm"><form onSubmit={recoverPin} className="w-full max-w-sm rounded-2xl bg-white p-6 text-slate-900 shadow-2xl"><h2 className="text-lg font-bold">Reset owner PIN</h2><p className="mt-1 text-xs leading-5 text-slate-500">Your active Clerk restaurant-owner membership will authorize this reset. All existing PIN sessions for your owner profile will be revoked.</p><div className="mt-5 space-y-2"><Label htmlFor="recovery-pin">New PIN</Label><Input id="recovery-pin" autoFocus value={newPin} onChange={event => setNewPin(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" type="password" placeholder="4–6 digits" /></div><div className="mt-4 space-y-2"><Label htmlFor="recovery-pin-confirm">Confirm new PIN</Label><Input id="recovery-pin-confirm" value={confirmPin} onChange={event => setConfirmPin(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" type="password" placeholder="Repeat PIN" /></div>{recoveryError && <p role="alert" className="mt-4 text-sm font-medium text-rose-700">{recoveryError}</p>}<div className="mt-6 flex gap-2"><Button type="button" variant="secondary" className="flex-1" onClick={() => { setRecoveryOpen(false); setNewPin(''); setConfirmPin(''); }}>Cancel</Button><Button type="submit" className="flex-1" disabled={recoveryBusy || newPin.length < 4 || confirmPin.length < 4}>{recoveryBusy ? <><LoaderCircle className="size-4 animate-spin" />Resetting…</> : 'Reset PIN'}</Button></div></form></div>}</main>;
 }
 
 export function StaffAccessScreen() {
