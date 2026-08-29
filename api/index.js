@@ -801,15 +801,28 @@ async function listLocationTerminals(locationId) {
 }
 async function authorizeTerminal(staffId, name, pin, type = "register", requestedTerminalId) {
   const staff = await ensureAccountForStaff(staffId);
-  await assertUniqueLocationPin(staff.locationId, pin, staffId);
-  const pinHash = await hashPin(pin);
+  const locationTerminals = await db.select().from(terminals).where(and3(eq3(terminals.locationId, staff.locationId), eq3(terminals.isActive, true), isNull2(terminals.revokedAt)));
+  const requestedExisting = requestedTerminalId ? locationTerminals.find((terminal) => terminal.id === requestedTerminalId) : locationTerminals.find((terminal) => terminal.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+  if (locationTerminals.length && !requestedExisting) throw new Error("Select an existing terminal. New terminal creation is disabled while this location already has terminals.");
+  let pinHash;
+  if (requestedExisting) {
+    if (staff.pinLockedUntil && staff.pinLockedUntil > /* @__PURE__ */ new Date()) throw new Error("Too many incorrect PIN attempts. Try again in one minute.");
+    if (!staff.pinHash) throw new Error("This administrator does not have a PIN. Use staff management from another authorized administrator to set one.");
+    if (!await verifyPin(pin, staff.pinHash)) {
+      const attempts = (staff.failedPinAttempts || 0) + 1;
+      await db.update(users).set({ failedPinAttempts: attempts >= 5 ? 0 : attempts, pinLockedUntil: attempts >= 5 ? new Date(Date.now() + 6e4) : null }).where(eq3(users.id, staff.id));
+      throw new Error(attempts >= 5 ? "Too many incorrect PIN attempts. Try again in one minute." : "Incorrect administrator PIN");
+    }
+  } else {
+    await assertUniqueLocationPin(staff.locationId, pin, staffId);
+    pinHash = await hashPin(pin);
+  }
   const rawToken = newOpaqueToken();
   return withTransaction(async (transaction) => {
-    await transaction.update(users).set({ pinHash, pinVersion: sql3`${users.pinVersion} + 1`, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(users.id, staff.id));
-    const locationTerminals = await transaction.select().from(terminals).where(and3(eq3(terminals.locationId, staff.locationId), eq3(terminals.isActive, true), isNull2(terminals.revokedAt)));
-    const existing = requestedTerminalId ? locationTerminals.find((terminal2) => terminal2.id === requestedTerminalId) : locationTerminals.find((terminal2) => terminal2.name.toLocaleLowerCase() === name.toLocaleLowerCase());
-    if (locationTerminals.length && !existing) throw new Error("Select an existing terminal. New terminal creation is disabled while this location already has terminals.");
-    const terminal = existing ? (await transaction.update(terminals).set({ credentialHash: hashToken(rawToken), type, enrolledByStaffId: staff.id, isActive: true, revokedAt: null, lastSeenAt: /* @__PURE__ */ new Date() }).where(eq3(terminals.id, existing.id)).returning())[0] : (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId, locationId: staff.locationId, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];
+    await transaction.update(users).set({ ...pinHash ? { pinHash, pinVersion: sql3`${users.pinVersion} + 1` } : {}, failedPinAttempts: 0, pinLockedUntil: null, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(users.id, staff.id));
+    const existing = requestedExisting ? (await transaction.select().from(terminals).where(and3(eq3(terminals.id, requestedExisting.id), eq3(terminals.locationId, staff.locationId), eq3(terminals.isActive, true), isNull2(terminals.revokedAt))).limit(1))[0] : void 0;
+    if (requestedExisting && !existing) throw new Error("The selected terminal changed while it was being authorized. Reload and try again.");
+    const terminal = existing ? (await transaction.update(terminals).set({ credentialHash: hashToken(rawToken), type, enrolledByStaffId: staff.id, lastSeenAt: /* @__PURE__ */ new Date() }).where(eq3(terminals.id, existing.id)).returning())[0] : (await transaction.insert(terminals).values({ restaurantId: staff.restaurantId, locationId: staff.locationId, name, type, credentialHash: hashToken(rawToken), enrolledByStaffId: staff.id }).returning())[0];
     if (existing) await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(and3(eq3(staffSessions.terminalId, terminal.id), isNull2(staffSessions.revokedAt)));
     await transaction.insert(auditEvents).values({ restaurantId: terminal.restaurantId, locationId: terminal.locationId, terminalId: terminal.id, actorStaffId: staff.id, action: existing ? "terminal.reauthorized" : "terminal.enrolled", entityType: "terminal", entityId: String(terminal.id) });
     return { terminal, rawToken };
