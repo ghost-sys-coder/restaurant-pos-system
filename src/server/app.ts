@@ -30,7 +30,7 @@ import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, li
 import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE, validatePinFormat } from '../auth/security.ts';
 import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
-import { attachBackOfficeUser, createRestaurantRecord, deactivateBackOfficeMembership, getRestaurantByClerkOrgId, getRestaurantById, getRestaurantSettings, listRestaurantClients, reconcileClerkAccessEvent, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
+import { attachBackOfficeUser, createRestaurantLocation, createRestaurantRecord, deactivateBackOfficeMembership, getRestaurantByClerkOrgId, getRestaurantById, getRestaurantSettings, listRestaurantClients, listRestaurantLocations, reconcileClerkAccessEvent, selectBackOfficeLocation, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
 import { deleteMenuImage, uploadMenuImage } from '../lib/cloudinary.ts';
 import { apiDiagnostics } from './httpDiagnostics.ts';
 import { ClerkAccessEvent, publicClerkName } from '../auth/clerkWebhook.ts';
@@ -172,6 +172,37 @@ app.post('/api/auth/sync', requireStrictAuth, async (req: AuthRequest, res) => {
   } catch (error: any) {
     res.status(403).json({ error: error?.message || 'Organization access could not be synchronized' });
   }
+});
+
+app.get('/api/organization/locations', requireStrictAuth, async (req: AuthRequest, res) => {
+  try {
+    const staff = await getOrCreateUserFromRequest(req);
+    const result = await listRestaurantLocations(req.clerkOrgId!);
+    if (!result) return res.status(404).json({ error: 'Restaurant organization not found' });
+    res.json({ currentLocationId: staff.locationId, locations: result.locations });
+  } catch (error: any) { res.status(403).json({ error: error?.message || 'Unable to load restaurant locations' }); }
+});
+
+app.post('/api/organization/locations', requireStrictAuth, async (req: AuthRequest, res) => {
+  try {
+    const staff = await getOrCreateUserFromRequest(req);
+    if (!['restaurant_owner', 'restaurant_admin'].includes(String(staff.role))) return res.status(403).json({ error: 'Only restaurant owners and administrators can create locations' });
+    const name = String(req.body.name || '').trim();
+    const timezone = String(req.body.timezone || 'Africa/Kampala').trim();
+    if (name.length < 2 || name.length > 80 || timezone.length < 3 || timezone.length > 80) return res.status(400).json({ error: 'A valid location name and timezone are required' });
+    res.status(201).json(await createRestaurantLocation(req.clerkOrgId!, name, timezone));
+  } catch (error: any) { res.status(400).json({ error: String(error?.message || '').toLowerCase().includes('unique') ? 'A location with this name already exists' : error?.message || 'Unable to create location' }); }
+});
+
+app.post('/api/organization/locations/select', requireStrictAuth, async (req: AuthRequest, res) => {
+  try {
+    await getOrCreateUserFromRequest(req);
+    const locationId = Number(req.body.locationId);
+    if (!Number.isInteger(locationId) || locationId < 1) return res.status(400).json({ error: 'Select a valid restaurant location' });
+    const result = await selectBackOfficeLocation(req.clerkOrgId!, req.authUserId!, locationId);
+    res.setHeader('Set-Cookie', [clearCookie(TERMINAL_COOKIE), clearCookie(STAFF_COOKIE)]);
+    res.json({ location: result.location });
+  } catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to select location' }); }
 });
 
 app.get('/api/platform/session', requireStrictAuth, async (req: AuthRequest, res) => {

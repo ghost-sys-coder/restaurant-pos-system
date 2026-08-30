@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useClerk } from '@clerk/react';
-import { ArrowLeft, Delete, Flame, LoaderCircle, LockKeyhole, MonitorSmartphone, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Delete, Flame, LoaderCircle, LockKeyhole, MapPin, MonitorSmartphone, ShieldCheck } from 'lucide-react';
 import { useAuth, type StaffProfile } from '../context/AuthContext.tsx';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -56,6 +56,8 @@ export function TerminalSetupScreen() {
   const [options, setOptions] = useState<Array<{ id: number; name: string; type: string }>>([]);
   const [selectedTerminalId, setSelectedTerminalId] = useState<number | null>(null);
   const [loadingOptions, setLoadingOptions] = useState(true);
+  const [locations, setLocations] = useState<Array<{ id: number; name: string; timezone: string }>>([]);
+  const [locationId, setLocationId] = useState<number | null>(null);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
@@ -63,13 +65,34 @@ export function TerminalSetupScreen() {
   const [recoveryError, setRecoveryError] = useState('');
 
   useEffect(() => {
-    fetch('/api/access/terminal/options').then(async response => {
+    const loadOptions = () => fetch('/api/access/terminal/options').then(async response => {
       const body = await response.json().catch(() => []);
       if (!response.ok) throw new Error(body.error || 'Unable to load terminals');
       setOptions(body);
       if (body[0]) { setSelectedTerminalId(body[0].id); setName(body[0].name); }
-    }).catch(error => setMessage(error?.message || 'Unable to load terminals')).finally(() => setLoadingOptions(false));
+    });
+    fetch('/api/organization/locations').then(async response => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Unable to load locations');
+      setLocations(body.locations || []); setLocationId(body.currentLocationId || body.locations?.[0]?.id || null);
+      return loadOptions();
+    }).catch(error => setMessage(error?.message || 'Unable to load terminal context')).finally(() => setLoadingOptions(false));
   }, []);
+
+  const changeLocation = async (nextLocationId: number) => {
+    setLoadingOptions(true); setMessage('');
+    try {
+      const response = await fetch('/api/organization/locations/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locationId: nextLocationId }) });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Unable to select location');
+      setLocationId(nextLocationId); setOptions([]); setSelectedTerminalId(null); setName('Front Counter');
+      const terminalsResponse = await fetch('/api/access/terminal/options');
+      const terminalBody = await terminalsResponse.json().catch(() => []);
+      if (!terminalsResponse.ok) throw new Error(terminalBody.error || 'Unable to load location terminals');
+      setOptions(terminalBody); if (terminalBody[0]) { setSelectedTerminalId(terminalBody[0].id); setName(terminalBody[0].name); }
+    } catch (error: any) { setMessage(error?.message || 'Unable to select location'); }
+    finally { setLoadingOptions(false); }
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -97,6 +120,7 @@ export function TerminalSetupScreen() {
     <div className="w-12 h-12 rounded-2xl bg-indigo-600 text-white grid place-items-center mb-6"><MonitorSmartphone /></div>
     <h1 className="text-2xl font-bold">{reconnecting ? 'Reconnect this terminal' : 'Set up this terminal'}</h1>
     <p className="text-sm text-slate-500 mt-2 mb-6">{reconnecting ? 'Select the existing terminal assigned to this device. Unknown names cannot create duplicate terminals.' : 'Connect the first device to your restaurant. Staff will use their personal PIN after setup.'}</p>
+    <div className="space-y-2 mb-5"><Label htmlFor="location"><span className="inline-flex items-center gap-1"><MapPin className="size-3.5" />Restaurant location</span></Label><select id="location" value={locationId || ''} disabled={loadingOptions} onChange={event => changeLocation(Number(event.target.value))} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"><option value="" disabled>Select a location</option>{locations.map(location => <option key={location.id} value={location.id}>{location.name}</option>)}</select><p className="text-xs text-slate-500">Terminals and staff profiles are isolated to this location.</p></div>
     <div className="space-y-2 mb-5"><Label htmlFor="terminal-name">{reconnecting ? 'Existing terminal' : 'Terminal name'}</Label>
       {loadingOptions ? <div className="flex h-10 items-center gap-2 rounded-md border px-3 text-xs text-slate-500"><LoaderCircle className="size-4 animate-spin" />Loading terminals…</div> : reconnecting ? <select id="terminal-name" value={selectedTerminalId || ''} onChange={event => { const id = Number(event.target.value); const option = options.find(value => value.id === id); setSelectedTerminalId(id); if (option) setName(option.name); }} className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm"><option value="" disabled>Select a terminal</option>{options.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select> : <Input id="terminal-name" value={name} onChange={event => setName(event.target.value)} maxLength={60} />}
     </div>

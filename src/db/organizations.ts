@@ -27,6 +27,28 @@ export async function getRestaurantWithDefaultLocation(clerkOrganizationId: stri
   return { restaurant, location };
 }
 
+export async function listRestaurantLocations(clerkOrganizationId: string) {
+  const restaurant = await getRestaurantByClerkOrgId(clerkOrganizationId);
+  if (!restaurant) return null;
+  return { restaurant, locations: await db.select().from(locations).where(eq(locations.restaurantId, restaurant.id)).orderBy(locations.id) };
+}
+
+export async function createRestaurantLocation(clerkOrganizationId: string, name: string, timezone: string) {
+  const restaurant = await getRestaurantByClerkOrgId(clerkOrganizationId);
+  if (!restaurant || restaurant.status !== 'active') throw new Error('Restaurant organization is not active');
+  return (await db.insert(locations).values({ restaurantId: restaurant.id, name, timezone }).returning())[0];
+}
+
+export async function selectBackOfficeLocation(clerkOrganizationId: string, clerkUserId: string, locationId: number) {
+  const restaurant = await getRestaurantByClerkOrgId(clerkOrganizationId);
+  if (!restaurant || restaurant.status !== 'active') throw new Error('Restaurant organization is not active');
+  const location = (await db.select().from(locations).where(and(eq(locations.id, locationId), eq(locations.restaurantId, restaurant.id))).limit(1))[0];
+  if (!location) throw new Error('Location does not belong to this restaurant');
+  const updated = (await db.update(users).set({ locationId, updatedAt: new Date() }).where(and(eq(users.restaurantId, restaurant.id), eq(users.clerkUserId, clerkUserId), eq(users.isActive, true))).returning())[0];
+  if (!updated) throw new Error('Synchronize your restaurant account before selecting a location');
+  return { location, user: updated };
+}
+
 export async function listRestaurantClients() {
   return db.select().from(restaurants);
 }
@@ -70,7 +92,7 @@ export async function attachBackOfficeUser(input: { clerkUserId: string; email: 
   if (existing) {
     return (await db.update(users).set({
       restaurantId: account.restaurant.id,
-      locationId: account.location.id,
+      locationId: existing.locationId || account.location.id,
       email: input.email,
       name: input.name,
       role: input.role,
