@@ -167,6 +167,22 @@ export async function updateTableDetails(locationId: number, id: number, data: {
   }
 }
 
+export async function transferOrderTable(restaurantId: number, locationId: number, orderId: number, targetTableId: number) {
+  return withTransaction(async tx => {
+    const order = (await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1))[0];
+    if (!order || !order.tableId) throw new Error('Active dine-in order not found');
+    if (['completed', 'cancelled'].includes(order.status || '')) throw new Error('Closed orders cannot be transferred');
+    if (order.tableId === targetTableId) throw new Error('Choose a different table');
+    await tx.execute(sql`select ${restaurantTables.id} from ${restaurantTables} where ${restaurantTables.locationId} = ${locationId} and ${restaurantTables.id} in (${order.tableId}, ${targetTableId}) order by ${restaurantTables.id} for update`);
+    const target = (await tx.select().from(restaurantTables).where(and(eq(restaurantTables.id, targetTableId), eq(restaurantTables.locationId, locationId))).limit(1))[0];
+    if (!target) throw new Error('Destination table not found');
+    if (target.currentOrderId || !['available', 'reserved'].includes(target.status || '')) throw new Error('Destination table is not available');
+    await tx.update(restaurantTables).set({ status: 'available', currentOrderId: null }).where(and(eq(restaurantTables.id, order.tableId), eq(restaurantTables.locationId, locationId), eq(restaurantTables.currentOrderId, order.id)));
+    await tx.update(restaurantTables).set({ status: 'occupied', currentOrderId: order.id }).where(and(eq(restaurantTables.id, targetTableId), eq(restaurantTables.locationId, locationId)));
+    return (await tx.update(orders).set({ tableId: targetTableId, version: sql`${orders.version} + 1` }).where(and(eq(orders.id, order.id), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).returning())[0];
+  });
+}
+
 // Orders
 export async function getOrders(restaurantId: number, locationId: number, statusFilter?: string) {
   try {

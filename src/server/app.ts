@@ -14,6 +14,7 @@ import {
   createTable,
   updateTableStatus,
   updateTableDetails,
+  transferOrderTable,
   getOrders,
   getOrderById,
   createOrder,
@@ -807,6 +808,19 @@ app.patch('/api/tables/:id', requirePermission('tables.manage'), async (req: Aut
     console.error('Failed to update table:', error);
     const message = error?.cause?.message || error?.message || 'Failed to update table';
     res.status(500).json({ error: message });
+  }
+});
+
+app.post('/api/orders/:id/transfer-table', requirePermission('orders.write'), async (req: AuthRequest, res) => {
+  try {
+    const orderId = Number(req.params.id); const targetTableId = Number(req.body.targetTableId);
+    if (!Number.isInteger(orderId) || !Number.isInteger(targetTableId)) return res.status(400).json({ error: 'A valid destination table is required' });
+    const order = await transferOrderTable(req.terminal!.restaurantId, req.terminal!.locationId, orderId, targetTableId);
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.table_transferred', entityType: 'order', entityId: String(orderId), metadata: { targetTableId } });
+    res.json(order);
+  } catch (error: any) {
+    const message = error?.cause?.message || error?.message || 'Unable to transfer table';
+    res.status(message.includes('not found') ? 404 : 409).json({ error: message });
   }
 });
 

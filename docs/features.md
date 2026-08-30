@@ -12,6 +12,9 @@
 
 ### 2. Table Management (Floor Plan)
 
+- Active dine-in orders can be transferred directly to another available table without recreating the ticket.
+- Transfers lock both table records, enforce location scope, advance the order version, and create an audit event.
+
 - **Visual Table Grid** organized by dining sections (Main Dining, Patio, Bar, VIP)
 - **Table Statuses**: Available, Occupied, Reserved, Cleaning, Billing
 - **Real-time Metrics**: Available count, occupied count, billing count, total seat capacity

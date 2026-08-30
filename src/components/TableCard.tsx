@@ -1,7 +1,9 @@
 import { usePos } from '../context/PosContext.tsx';
 import { RestaurantTable, TableStatus } from '../types.ts';
 import { formatCurrency, getElapsedMinutes } from '../utils/formatters.ts';
-import { Users, Clock, Receipt, CheckCircle, RefreshCw, Pencil } from 'lucide-react';
+import { Users, Clock, Receipt, CheckCircle, RefreshCw, Pencil, ArrowRightLeft } from 'lucide-react';
+import { useState } from 'react';
+import TransferTableModal from './TransferTableModal.tsx';
 
 const STATUS_CONFIG: Record<
   TableStatus,
@@ -50,6 +52,7 @@ const STATUS_CONFIG: Record<
 };
 
 export default function TableCard({ table, onEdit }: { table: RestaurantTable; onEdit: () => void }) {
+  const [transferring, setTransferring] = useState(false);
   const {
     orders,
     setSelectedTableId,
@@ -171,7 +174,7 @@ export default function TableCard({ table, onEdit }: { table: RestaurantTable; o
         )}
 
         {table.status === 'occupied' && (
-          <div className="w-full grid grid-cols-2 gap-1.5">
+          <div className="w-full grid grid-cols-3 gap-1.5">
             <button
               onClick={handleOpenActiveOrder}
               className="py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1 shadow-2xs"
@@ -180,6 +183,7 @@ export default function TableCard({ table, onEdit }: { table: RestaurantTable; o
               <span>Order</span>
             </button>
             <button onClick={() => activeOrder && openOrderForPayment(activeOrder)} className="py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer">Checkout</button>
+            <button onClick={() => setTransferring(true)} title="Transfer order" className="flex items-center justify-center rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200"><ArrowRightLeft className="size-3.5" /></button>
           </div>
         )}
 
@@ -214,6 +218,7 @@ export default function TableCard({ table, onEdit }: { table: RestaurantTable; o
           </button>
         )}
       </div>
+      {transferring && activeOrder && <TransferTableModal order={activeOrder} source={table} onClose={() => setTransferring(false)} />}
     </div>
   );
 }
