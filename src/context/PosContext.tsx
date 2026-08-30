@@ -76,7 +76,7 @@ interface PosContextType {
   dismissOrderConflict: () => void;
   loadLatestOrderAfterConflict: () => void;
   updateOrderStatus: (orderId: number, status: string) => Promise<void>;
-  updateOrderItemStatus: (itemId: number, status: string) => Promise<void>;
+  updateOrderItemStatus: (itemId: number, status: string, voidReason?: string) => Promise<void>;
   processPayment: (orderId: number, amount: number, method: string, tipAmount?: number, tenderedAmount?: number, idempotencyKey?: string) => Promise<Order | null>;
   // Modals & Active Targets
   activeCustomizingItem: MenuItem | null;
@@ -406,18 +406,28 @@ export function PosProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const updateOrderItemStatus = async (itemId: number, status: string) => {
+  const updateOrderItemStatus = async (itemId: number, status: string, voidReason?: string) => {
     try {
-      const res = await fetch(`/api/orders/items/${itemId}/status`, {
+      const send = (approvalToken?: string) => fetch(`/api/orders/items/${itemId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        headers: { 'Content-Type': 'application/json', ...(approvalToken ? { 'x-manager-approval': approvalToken } : {}) },
+        body: JSON.stringify({ status, voidReason }),
       });
+      let res = await send();
+      if (res.status === 428) {
+        const required = await res.json().catch(() => ({}));
+        const token = await requestManagerApproval(required.action || 'order.item_void', required.entityId || String(itemId), required.error || 'Manager approval required');
+        if (!token) return;
+        res = await send(token);
+      }
       if (res.ok) {
         await fetchData();
+      } else {
+        const body = await res.json().catch(() => ({})); throw new Error(body.error || 'Unable to update kitchen item');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to update item status:', err);
+      showToast(err.message || 'Unable to update kitchen item');
     }
   };
 

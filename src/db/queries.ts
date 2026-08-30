@@ -61,6 +61,7 @@ export async function createMenuItem(data: {
   imagePublicId?: string;
   calories?: number;
   prepTimeMinutes?: number;
+  kitchenStation?: string;
   allergens?: string;
   optionsJson?: string;
 }) {
@@ -87,6 +88,7 @@ export async function updateMenuItem(restaurantId: number, id: number, data: Par
   isAvailable: boolean;
   calories: number;
   prepTimeMinutes: number;
+  kitchenStation: string;
   allergens: string;
   optionsJson: string;
 }>) {
@@ -274,7 +276,7 @@ async function priceOrderItems(transaction: any, restaurantId: number, requested
     const quantity = clampInteger(request.quantity, 1, 99);
     const menuItem = (await transaction.select().from(menuItems).where(and(eq(menuItems.id, request.menuItemId), eq(menuItems.restaurantId, restaurantId), eq(menuItems.isAvailable, true))).limit(1))[0];
     if (!menuItem) throw new Error('A selected menu item is unavailable');
-    result.push({ menuItemId: menuItem.id, name: menuItem.name, price: menuItem.price + selectedOptionPrice(menuItem.optionsJson, request.selectedOptions), quantity, selectedOptions: request.selectedOptions || null, notes: request.notes?.trim().slice(0, 500) || null });
+    result.push({ menuItemId: menuItem.id, name: menuItem.name, kitchenStation: menuItem.kitchenStation, price: menuItem.price + selectedOptionPrice(menuItem.optionsJson, request.selectedOptions), quantity, selectedOptions: request.selectedOptions || null, notes: request.notes?.trim().slice(0, 500) || null });
   }
   return result;
 }
@@ -322,13 +324,14 @@ export async function updateOrderStatus(restaurantId: number, locationId: number
   }
 }
 
-export async function updateOrderItemStatus(restaurantId: number, locationId: number, itemId: number, itemStatus: string) {
+export async function updateOrderItemStatus(restaurantId: number, locationId: number, itemId: number, itemStatus: string, voidReason?: string) {
   try {
     return await withTransaction(async tx => {
       const owned = await tx.select({ id: orderItems.id, itemStatus: orderItems.itemStatus }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(and(eq(orderItems.id, itemId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1);
       if (!owned[0]) return undefined;
       if (!canTransitionItem(owned[0].itemStatus || '', itemStatus)) throw new Error(`Item cannot move from ${owned[0].itemStatus} to ${itemStatus}`);
-      const updated = (await tx.update(orderItems).set({ itemStatus }).where(eq(orderItems.id, itemId)).returning())[0];
+      const timestamps = itemStatus === 'preparing' ? { firedAt: new Date() } : itemStatus === 'ready' ? { readyAt: new Date() } : itemStatus === 'served' ? { servedAt: new Date() } : itemStatus === 'void' ? { voidedAt: new Date(), voidReason: String(voidReason || '').trim().slice(0, 250) } : {};
+      const updated = (await tx.update(orderItems).set({ itemStatus, ...timestamps }).where(eq(orderItems.id, itemId)).returning())[0];
       if (itemStatus === 'served') await consumeOrderItemInventory(tx, restaurantId, locationId, itemId);
       return updated;
     });

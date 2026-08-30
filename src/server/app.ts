@@ -64,6 +64,7 @@ function menuItemPayload(body: Record<string, any>) {
     name: String(body.name).trim().slice(0, 120),
     description: String(body.description || '').trim().slice(0, 1_000),
     allergens: String(body.allergens || '').trim().slice(0, 500), optionsJson: String(body.optionsJson || '[]'),
+    kitchenStation: String(body.kitchenStation || 'main').trim().toLowerCase().slice(0, 40),
     isAvailable: body.isAvailable === true || body.isAvailable === 'true',
   };
 }
@@ -860,7 +861,11 @@ app.patch('/api/orders/items/:id/status', requirePermission('kitchen.manage'), a
     const id = Number(req.params.id);
     const { status } = req.body;
     if (!['preparing', 'ready', 'served', 'void'].includes(String(status))) return res.status(400).json({ error: 'Invalid item status' });
-    const item = await updateOrderItemStatus(req.terminal!.restaurantId, req.terminal!.locationId, id, status);
+    if (status === 'void' && !['restaurant_owner', 'restaurant_admin', 'general_manager', 'shift_manager'].includes(String(req.staff?.role)) && !await hasManagerApproval(req, 'order.item_void', String(id))) return res.status(428).json({ error: 'Manager approval required to void an item', code: 'APPROVAL_REQUIRED', action: 'order.item_void', entityId: String(id) });
+    const voidReason = String(req.body.voidReason || '').trim();
+    if (status === 'void' && voidReason.length < 3) return res.status(400).json({ error: 'A void reason is required' });
+    const item = await updateOrderItemStatus(req.terminal!.restaurantId, req.terminal!.locationId, id, status, voidReason);
+    if (status === 'void') await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.item_voided', entityType: 'order_item', entityId: String(id), metadata: { reason: voidReason } });
     res.json(item);
   } catch (error: any) {
     console.error('Failed to update item status:', error);

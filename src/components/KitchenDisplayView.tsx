@@ -7,9 +7,12 @@ import { playKitchenChime } from '../utils/sound.ts';
 export default function KitchenDisplayView() {
   const { orders } = usePos();
   const [filter, setFilter] = useState<'all_active' | 'active' | 'preparing' | 'ready'>('all_active');
+  const [station, setStation] = useState('all');
+  const stations = Array.from(new Set(orders.flatMap(order => order.items || []).map(item => item.kitchenStation || 'main'))).sort();
 
   const kitchenOrders = orders.filter((o) => {
     if (o.status === 'completed' || o.status === 'cancelled') return false;
+    if (station !== 'all' && !o.items?.some(item => (item.kitchenStation || 'main') === station && item.itemStatus !== 'served' && item.itemStatus !== 'void')) return false;
     if (filter === 'all_active') return true;
     return o.status === filter;
   });
@@ -43,6 +46,7 @@ export default function KitchenDisplayView() {
 
         {/* Filter Pills & Audio Test */}
         <div className="flex flex-wrap items-center gap-2">
+          <select aria-label="Kitchen station" value={station} onChange={event => setStation(event.target.value)} className="h-8 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold"><option value="all">All stations</option>{stations.map(value => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}</select>
           <button
             id="kds-filter-all"
             onClick={() => setFilter('all_active')}

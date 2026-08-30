@@ -27,6 +27,7 @@ export default function MenuItemEditModal({
   const [prepTimeMinutes, setPrepTimeMinutes] = useState<number>(
     item?.prepTimeMinutes || 10
   );
+  const [kitchenStation, setKitchenStation] = useState(item?.kitchenStation || 'main');
   const [calories, setCalories] = useState<number>(item?.calories || 450);
   const [allergens, setAllergens] = useState<string>(item?.allergens || '');
   const [isAvailable, setIsAvailable] = useState<boolean>(
@@ -59,7 +60,7 @@ export default function MenuItemEditModal({
 
     const payload = new FormData();
     try { JSON.parse(optionsJson); } catch { setIsSubmitting(false); setFormError('Modifier configuration must be valid JSON'); return; }
-    Object.entries({ name: name.trim(), categoryId, price: parsedPrice, description: description.trim(), prepTimeMinutes, calories, allergens: allergens.trim(), isAvailable, removeImage, optionsJson }).forEach(([key, value]) => payload.set(key, String(value)));
+    Object.entries({ name: name.trim(), categoryId, price: parsedPrice, description: description.trim(), prepTimeMinutes, kitchenStation, calories, allergens: allergens.trim(), isAvailable, removeImage, optionsJson }).forEach(([key, value]) => payload.set(key, String(value)));
     if (imageFile) payload.set('image', imageFile);
 
     try {
@@ -237,6 +238,7 @@ export default function MenuItemEditModal({
               />
             </div>
           </div>
+          <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Kitchen station</label><select value={kitchenStation} onChange={event => setKitchenStation(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="main">Main kitchen</option><option value="grill">Grill</option><option value="fryer">Fryer</option><option value="bar">Bar</option><option value="dessert">Dessert</option><option value="cold">Cold station</option></select></div>
 
           <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Modifier groups</label><textarea rows={7} value={optionsJson} onChange={event => setOptionsJson(event.target.value)} spellCheck={false} className="w-full rounded-xl border border-slate-200 bg-slate-950 px-3 py-2 font-mono text-[11px] leading-5 text-slate-100 focus:border-indigo-500 focus:outline-none" /><p className="mt-1 text-[11px] text-slate-500">JSON groups support name, minSelections, maxSelections, kitchenLabel, and choices containing name and price. Prices are checked and recalculated by the server.</p></div>
 

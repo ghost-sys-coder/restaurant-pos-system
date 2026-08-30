@@ -127,6 +127,7 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
                 </span>
                 <div className="flex-1">
                   <p className="text-xs font-bold text-slate-900">{item.name}</p>
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">{(item.kitchenStation || 'main').replaceAll('_', ' ')}</p>
                   {item.selectedOptions && (
                     <p className="text-[11px] text-indigo-600 font-medium mt-0.5">
                       {item.selectedOptions}

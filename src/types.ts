@@ -56,6 +56,7 @@ export interface MenuItem {
   isAvailable: boolean;
   calories: number | null;
   prepTimeMinutes: number;
+  kitchenStation: string;
   allergens: string | null;
   optionsJson: string | null;
   createdAt?: string;
@@ -78,11 +79,18 @@ export interface OrderItem {
   orderId?: number;
   menuItemId?: number;
   name: string;
+  kitchenStation?: string;
   price: number; // cents
   quantity: number;
   selectedOptions?: string | null;
   notes?: string | null;
   itemStatus?: ItemStatus;
+  course?: string;
+  firedAt?: string | null;
+  readyAt?: string | null;
+  servedAt?: string | null;
+  voidedAt?: string | null;
+  voidReason?: string | null;
   createdAt?: string;
 }
 

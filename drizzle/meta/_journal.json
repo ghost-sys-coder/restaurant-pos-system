@@ -71,6 +71,13 @@
       "when": 1788059597481,
       "tag": "0009_lumpy_magus",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788059817305,
+      "tag": "0010_funny_wasp",
+      "breakpoints": true
     }
   ]
 }

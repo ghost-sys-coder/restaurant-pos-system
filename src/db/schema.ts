@@ -131,6 +131,7 @@ export const menuItems = pgTable('menu_items', {
   isAvailable: boolean('is_available').default(true),
   calories: integer('calories'),
   prepTimeMinutes: integer('prep_time_minutes').default(10),
+  kitchenStation: text('kitchen_station').default('main').notNull(),
   allergens: text('allergens'),
   optionsJson: text('options_json'), // Customization options
   createdAt: timestamp('created_at').defaultNow(),
@@ -242,11 +243,18 @@ export const orderItems = pgTable('order_items', {
   orderId: integer('order_id').references(() => orders.id).notNull(),
   menuItemId: integer('menu_item_id').references(() => menuItems.id),
   name: text('name').notNull(),
+  kitchenStation: text('kitchen_station').default('main').notNull(),
   price: integer('price').notNull(),
   quantity: integer('quantity').default(1).notNull(),
   selectedOptions: text('selected_options'),
   notes: text('notes'),
   itemStatus: text('item_status').default('sent'), // sent, preparing, ready, served, void
+  course: text('course').default('main').notNull(),
+  firedAt: timestamp('fired_at'),
+  readyAt: timestamp('ready_at'),
+  servedAt: timestamp('served_at'),
+  voidedAt: timestamp('voided_at'),
+  voidReason: text('void_reason'),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
