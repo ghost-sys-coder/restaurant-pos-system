@@ -13,6 +13,7 @@ import NotificationToast from './NotificationToast.tsx';
 import SettingsView from './SettingsView.tsx';
 import InventoryView from './InventoryView.tsx';
 import ManagerApprovalModal from './ManagerApprovalModal.tsx';
+import ConnectionStatus from './ConnectionStatus.tsx';
 
 export default function PosLayout() {
   const { activeView, isLoading } = usePos();
@@ -21,6 +22,7 @@ export default function PosLayout() {
     <div className="flex flex-col h-screen w-screen bg-slate-50 text-slate-900 overflow-hidden font-sans">
       {/* Top Navbar */}
       <Navbar />
+      <ConnectionStatus />
 
       {/* Main Active View */}
       <main className="flex-1 overflow-hidden relative flex flex-col">

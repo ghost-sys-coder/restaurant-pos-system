@@ -90,6 +90,13 @@
 
 ## Tech Stack
 
+## Connectivity resilience
+
+- A persistent banner distinguishes degraded and offline operation from healthy synchronization.
+- Unsaved carts are retained per terminal and staff profile, then restored after refresh or reconnection.
+- Operational refreshes pause in hidden tabs and back off exponentially after failures.
+- Returning online triggers a full location-scoped refresh. Financial writes are never treated as successful while offline.
+
 - **Frontend**: React 19 + TypeScript + Tailwind CSS v4
 - **Backend**: Express + Vite middleware mode
 - **Database**: PostgreSQL with Drizzle ORM

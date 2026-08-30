@@ -24,6 +24,8 @@ export interface OrderConflict {
 export interface ManagerApprovalPrompt { action: string; entityId?: string; message: string; resolve: (token: string | null) => void }
 
 interface PosContextType {
+  connectionState: 'online' | 'degraded' | 'offline';
+  lastSyncedAt: Date | null;
   activeView: ActiveView;
   setActiveView: (view: ActiveView) => void;
   categories: Category[];
@@ -144,6 +146,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
   const [addTableModalOpen, setAddTableModalOpen] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<'online' | 'degraded' | 'offline'>(navigator.onLine ? 'online' : 'offline');
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
 
   const draftKey = terminal && currentUser ? `vc:draft:${terminal.id}:${currentUser.id}` : null;
   useEffect(() => {
@@ -178,13 +182,17 @@ export function PosProvider({ children }: { children: ReactNode }) {
         fetch('/api/config'),
       ]);
 
+      if (![catsRes, itemsRes, tablesRes, ordersRes, configRes].every(response => response.ok)) throw new Error('Some POS data could not be refreshed');
       if (catsRes.ok) setCategories(await catsRes.json());
       if (itemsRes.ok) setMenuItems(await itemsRes.json());
       if (tablesRes.ok) setTables(await tablesRes.json());
       if (ordersRes.ok) setOrders(await ordersRes.json());
       if (configRes.ok) { const config = await configRes.json(); setTaxRateBps(config.taxRateBps || 0); setCurrency(config.currency || 'UGX'); }
+      setConnectionState('online');
+      setLastSyncedAt(new Date());
     } catch (err) {
       console.error('Failed to load POS data:', err);
+      setConnectionState(navigator.onLine ? 'degraded' : 'offline');
     } finally {
       setIsLoading(false);
     }
@@ -192,6 +200,14 @@ export function PosProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     fetchData();
+  }, [currentUser]);
+
+  useEffect(() => {
+    const online = () => { setConnectionState('degraded'); void fetchData(); };
+    const offline = () => setConnectionState('offline');
+    window.addEventListener('online', online);
+    window.addEventListener('offline', offline);
+    return () => { window.removeEventListener('online', online); window.removeEventListener('offline', offline); };
   }, [currentUser]);
 
   useEffect(() => {
@@ -209,8 +225,9 @@ export function PosProvider({ children }: { children: ReactNode }) {
         if (tablesRes.ok) setTables(await tablesRes.json());
         if (ordersRes.ok) setOrders(await ordersRes.json());
         if (!tablesRes.ok || !ordersRes.ok) throw new Error('Background refresh failed');
+        setConnectionState('online'); setLastSyncedAt(new Date());
         delay = 10_000;
-      } catch { delay = Math.min(delay * 2, 60_000); }
+      } catch { setConnectionState(navigator.onLine ? 'degraded' : 'offline'); delay = Math.min(delay * 2, 60_000); }
       timer = window.setTimeout(poll, delay);
     };
     timer = window.setTimeout(poll, delay);
@@ -473,6 +490,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
   return (
     <PosContext.Provider
       value={{
+        connectionState,
+        lastSyncedAt,
         activeView,
         setActiveView,
         categories,
