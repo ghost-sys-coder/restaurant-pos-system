@@ -4,13 +4,18 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useAuth } from '../context/AuthContext.tsx';
 
 type Profile = { id: number; name: string; jobType: string; connectionType: string };
 type Job = { id: number; jobType: string; status: string; attempts: number; lastError: string | null; payload: Record<string, unknown> };
+const printOperationsCache = new Map<number, { profiles: Profile[]; jobs: Job[] }>();
 
 export default function PrintOperationsPanel() {
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const { terminal } = useAuth();
+  const cacheKey = terminal?.locationId ?? 0;
+  const cachedPrintOperations = printOperationsCache.get(cacheKey);
+  const [profiles, setProfiles] = useState<Profile[]>(cachedPrintOperations?.profiles ?? []);
+  const [jobs, setJobs] = useState<Job[]>(cachedPrintOperations?.jobs ?? []);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [name, setName] = useState('');
@@ -19,8 +24,11 @@ export default function PrintOperationsPanel() {
 
   const load = async () => {
     const [profilesResponse, jobsResponse] = await Promise.all([fetch('/api/printers'), fetch('/api/print-jobs')]);
-    if (profilesResponse.ok) setProfiles(await profilesResponse.json());
-    if (jobsResponse.ok) setJobs(await jobsResponse.json());
+    const nextProfiles = profilesResponse.ok ? await profilesResponse.json() : profiles;
+    const nextJobs = jobsResponse.ok ? await jobsResponse.json() : jobs;
+    setProfiles(nextProfiles);
+    setJobs(nextJobs);
+    printOperationsCache.set(cacheKey, { profiles: nextProfiles, jobs: nextJobs });
   };
 
   useEffect(() => { void load(); }, []);

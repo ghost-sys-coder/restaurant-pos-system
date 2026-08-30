@@ -3,35 +3,45 @@ import { Building2, ChevronLeft, ChevronRight, Coins, Globe2, LoaderCircle, MapP
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useAuth } from '../context/AuthContext.tsx';
 import { formatDate } from '../utils/formatters.ts';
 import PrintOperationsPanel from './PrintOperationsPanel.tsx';
 
 type RestaurantSettings = { receiptName: string; currency: string; taxRateBps: number; timezone: string; inactivityTimeoutMinutes: number };
 type AuditEvent = { id: number; action: string; entityType: string | null; entityId: string | null; actorStaffId: number | null; createdAt: string };
 type Location = { id: number; name: string; timezone: string };
+type SettingsCache = { settings: RestaurantSettings; events: AuditEvent[]; locations: Location[] };
+const settingsCache = new Map<number, SettingsCache>();
 
 export default function SettingsView() {
-  const [settings, setSettings] = useState<RestaurantSettings | null>(null);
-  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const { terminal } = useAuth();
+  const cacheKey = terminal?.locationId ?? 0;
+  const cachedSettings = settingsCache.get(cacheKey);
+  const [settings, setSettings] = useState<RestaurantSettings | null>(cachedSettings?.settings ?? null);
+  const [events, setEvents] = useState<AuditEvent[]>(cachedSettings?.events ?? []);
   const [auditPage, setAuditPage] = useState(1);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedSettings);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
-  const [locations, setLocations] = useState<Location[]>([]);
+  const [locations, setLocations] = useState<Location[]>(cachedSettings?.locations ?? []);
   const [locationName, setLocationName] = useState('');
   const [locationBusy, setLocationBusy] = useState(false);
 
-  const load = async (clearMessage = true) => {
-    setLoading(true);
+  const load = async ({ showLoader = false, clearMessage = true }: { showLoader?: boolean; clearMessage?: boolean } = {}) => {
+    if (showLoader) setLoading(true);
     if (clearMessage) setMessage('');
     try {
       const [settingsResponse, auditResponse, locationsResponse] = await Promise.all([
         fetch('/api/settings'), fetch('/api/audit?limit=100'), fetch('/api/organization/locations'),
       ]);
       if (!settingsResponse.ok) throw new Error((await settingsResponse.json().catch(() => ({}))).error || 'Unable to load settings');
-      setSettings(await settingsResponse.json());
-      if (auditResponse.ok) { setEvents(await auditResponse.json()); setAuditPage(1); }
-      if (locationsResponse.ok) setLocations((await locationsResponse.json()).locations || []);
+      const nextSettings = await settingsResponse.json();
+      const nextEvents = auditResponse.ok ? await auditResponse.json() : events;
+      const nextLocations = locationsResponse.ok ? (await locationsResponse.json()).locations || [] : locations;
+      setSettings(nextSettings);
+      setEvents(nextEvents);
+      setLocations(nextLocations);
+      settingsCache.set(cacheKey, { settings: nextSettings, events: nextEvents, locations: nextLocations });
     } catch (error: any) {
       setMessage(error?.message || 'Unable to load administration data');
     } finally { setLoading(false); }
@@ -43,12 +53,12 @@ export default function SettingsView() {
       const response = await fetch('/api/organization/locations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: locationName, timezone: settings?.timezone || 'Africa/Kampala' }) });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || 'Unable to create location');
-      setLocations(current => [...current, body]); setLocationName(''); setMessage('Location created');
+      setLocations(current => { const next = [...current, body]; const cached = settingsCache.get(cacheKey); if (cached) settingsCache.set(cacheKey, { ...cached, locations: next }); return next; }); setLocationName(''); setMessage('Location created');
     } catch (error: any) { setMessage(error?.message || 'Unable to create location'); }
     finally { setLocationBusy(false); }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load({ showLoader: !cachedSettings }); }, []);
 
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); if (!settings) return; setSaving(true); setMessage('');
@@ -56,7 +66,7 @@ export default function SettingsView() {
       const response = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || 'Unable to save settings');
-      await load(false); setMessage('Settings saved');
+      await load({ clearMessage: false }); setMessage('Settings saved');
     } catch (error: any) { setMessage(error?.message || 'Unable to save settings'); }
     finally { setSaving(false); }
   };

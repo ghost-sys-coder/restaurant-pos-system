@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useAuth } from '../context/AuthContext.tsx';
 import { usePos } from '../context/PosContext.tsx';
 
 type StockItem = { id: number; name: string; sku: string | null; unit: string; onHandMilliunits: number; reorderLevelMilliunits: number };
@@ -12,12 +13,16 @@ type Movement = { id: number; inventoryItemId: number; deltaMilliunits: number; 
 
 const units = ['each', 'g', 'kg', 'ml', 'l'];
 const displayQuantity = (value: number) => (value / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 });
+const inventoryCache = new Map<number, { items: StockItem[]; movements: Movement[] }>();
 
 export default function InventoryView() {
   const { menuItems, showToast } = usePos();
-  const [items, setItems] = useState<StockItem[]>([]);
-  const [movements, setMovements] = useState<Movement[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { terminal } = useAuth();
+  const cacheKey = terminal?.locationId ?? 0;
+  const cachedInventory = inventoryCache.get(cacheKey);
+  const [items, setItems] = useState<StockItem[]>(cachedInventory?.items ?? []);
+  const [movements, setMovements] = useState<Movement[]>(cachedInventory?.movements ?? []);
+  const [loading, setLoading] = useState(!cachedInventory);
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
@@ -31,19 +36,20 @@ export default function InventoryView() {
   const [recipeMenuId, setRecipeMenuId] = useState<number | null>(menuItems[0]?.id || null);
   const [recipeRows, setRecipeRows] = useState<Array<{ inventoryItemId: number; quantity: string }>>([]);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (showLoader = false) => {
+    if (showLoader) setLoading(true);
     try {
       const response = await fetch('/api/inventory');
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
       setItems(body.items);
       setMovements(body.movements);
+      inventoryCache.set(cacheKey, { items: body.items, movements: body.movements });
     } catch (error: any) { showToast(error.message || 'Unable to load inventory'); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(!cachedInventory); }, []);
 
   const create = async (event: React.FormEvent) => {
     event.preventDefault(); setBusy(true);
@@ -86,7 +92,7 @@ export default function InventoryView() {
   const selectedItem = items.find(item => item.id === adjustId);
 
   return <div className="flex-1 overflow-y-auto bg-slate-50/80 px-4 py-6 lg:px-8 lg:py-8"><div className="mx-auto max-w-7xl space-y-6">
-    <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white shadow-sm shadow-indigo-200"><Boxes className="size-5" /></div><div><h1 className="text-xl font-bold tracking-tight text-slate-950">Inventory & recipes</h1><p className="mt-1 text-sm text-slate-500">Monitor stock health, record movements, and connect ingredients to menu items.</p></div></div><Button className="h-10 self-start bg-white" variant="outline" onClick={load}><RefreshCw />Refresh inventory</Button></header>
+    <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><div className="grid size-11 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white shadow-sm shadow-indigo-200"><Boxes className="size-5" /></div><div><h1 className="text-xl font-bold tracking-tight text-slate-950">Inventory & recipes</h1><p className="mt-1 text-sm text-slate-500">Monitor stock health, record movements, and connect ingredients to menu items.</p></div></div><Button className="h-10 self-start bg-white" variant="outline" onClick={() => void load(false)}><RefreshCw />Refresh inventory</Button></header>
 
     <section className="grid gap-3 sm:grid-cols-3">
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/40"><div className="flex items-center justify-between"><span className="grid size-9 place-items-center rounded-xl bg-indigo-50 text-indigo-600"><Boxes className="size-4" /></span><Badge variant="secondary">Live</Badge></div><p className="mt-4 text-2xl font-bold tracking-tight text-slate-950">{items.length}</p><p className="mt-1 text-xs font-medium text-slate-500">Tracked stock items</p></div>
