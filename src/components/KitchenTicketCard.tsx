@@ -7,9 +7,10 @@ import { playBeep } from '../utils/sound.ts';
 import VoidOrderItemModal from './VoidOrderItemModal.tsx';
 
 export default function KitchenTicketCard({ order }: { order: Order }) {
-  const { updateOrderStatus, updateOrderItemStatus, showToast } = usePos();
+  const { updateOrderStatus, updateOrderItemStatus } = usePos();
   const [elapsed, setElapsed] = useState<number>(getElapsedMinutes(order.createdAt));
   const [voidTarget, setVoidTarget] = useState<NonNullable<Order['items']>[number] | null>(null);
+  const [isBumping, setIsBumping] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -33,6 +34,7 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
   };
 
   const handleBumpOrder = async () => {
+    if (isBumping || !['active', 'preparing', 'ready'].includes(order.status)) return;
     playBeep(900, 0.08);
     const nextOrderStatus =
       order.status === 'active'
@@ -40,8 +42,12 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
         : order.status === 'preparing'
         ? 'ready'
         : 'served';
-    await updateOrderStatus(order.id, nextOrderStatus);
-    showToast(`Order ${order.orderNumber} bumped to ${nextOrderStatus}`);
+    setIsBumping(true);
+    try {
+      await updateOrderStatus(order.id, nextOrderStatus);
+    } finally {
+      setIsBumping(false);
+    }
   };
 
   return (
@@ -168,6 +174,7 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
         <button
           id={`btn-bump-${order.id}`}
           onClick={handleBumpOrder}
+          disabled={isBumping}
           className={`w-full py-2.5 px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs ${
             order.status === 'ready'
               ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
@@ -176,10 +183,12 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
               : 'bg-indigo-600 hover:bg-indigo-700 text-white'
           }`}
         >
-          {order.status === 'ready' ? (
+          {isBumping ? (
+            <span>Updating order…</span>
+          ) : order.status === 'ready' ? (
             <>
               <CheckCheck className="w-4 h-4" />
-              <span>Mark Served / Complete</span>
+              <span>Mark Order Served</span>
             </>
           ) : order.status === 'preparing' ? (
             <>

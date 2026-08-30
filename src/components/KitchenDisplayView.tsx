@@ -12,7 +12,7 @@ export default function KitchenDisplayView() {
   const stations = Array.from(new Set(orders.flatMap(order => order.items || []).map(item => item.kitchenStation || 'main'))).sort();
 
   const kitchenOrders = orders.filter((o) => {
-    if (o.status === 'completed' || o.status === 'cancelled') return false;
+    if (o.status === 'served' || o.status === 'completed' || o.status === 'cancelled') return false;
     if (station !== 'all' && !o.items?.some(item => (item.kitchenStation || 'main') === station && item.itemStatus !== 'served' && item.itemStatus !== 'void')) return false;
     if (filter === 'all_active') return true;
     return o.status === filter;
@@ -47,7 +47,7 @@ export default function KitchenDisplayView() {
 
         {/* Filter Pills & Audio Test */}
         <div className="flex flex-wrap items-center gap-2">
-          <Select value={station} onValueChange={value => setStation(value ?? 'all')}><SelectTrigger aria-label="Kitchen station" className="h-8 min-w-36 rounded-xl bg-white text-xs font-bold"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All stations</SelectItem>{stations.map(value => <SelectItem key={value} value={value}>{value.replaceAll('_', ' ')}</SelectItem>)}</SelectContent></Select>
+          <Select items={[{ value: 'all', label: 'All stations' }, ...stations.map(value => ({ value, label: value.replaceAll('_', ' ') }))]} value={station} onValueChange={value => setStation(value ?? 'all')}><SelectTrigger aria-label="Kitchen station" className="h-9 min-w-36 rounded-xl bg-white text-xs font-bold"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All stations</SelectItem>{stations.map(value => <SelectItem key={value} value={value}>{value.replaceAll('_', ' ')}</SelectItem>)}</SelectContent></Select>
           <button
             id="kds-filter-all"
             onClick={() => setFilter('all_active')}

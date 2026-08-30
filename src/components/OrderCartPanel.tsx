@@ -79,7 +79,7 @@ export default function OrderCartPanel() {
   return (
     <div
       id="pos-order-cart-panel"
-      className="w-full lg:w-96 xl:w-[410px] h-full bg-white border-l border-slate-200 flex flex-col min-h-0 text-slate-900 overflow-hidden"
+      className="w-full lg:w-[430px] xl:w-[470px] h-full bg-white border-l border-slate-200 flex flex-col min-h-0 text-slate-900 overflow-hidden"
     >
       {/* Header & Order Type Switcher */}
       <div className="p-4 border-b border-slate-200 bg-slate-50/50 space-y-3 shrink-0">
@@ -132,8 +132,8 @@ export default function OrderCartPanel() {
               <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
                 Table
               </label>
-              <Select value={selectedTableId ? String(selectedTableId) : null} onValueChange={value => setSelectedTableId(value ? Number(value) : null)}>
-                <SelectTrigger id="select-cart-table" className="h-8 w-full rounded-xl bg-white text-xs font-semibold"><SelectValue placeholder="Choose table" /></SelectTrigger>
+              <Select items={tables.map(tbl => ({ value: String(tbl.id), label: `${tbl.tableNumber} (${tbl.section} - ${tbl.status})` }))} value={selectedTableId ? String(selectedTableId) : null} onValueChange={value => setSelectedTableId(value ? Number(value) : null)}>
+                <SelectTrigger id="select-cart-table" className="h-10 w-full rounded-xl bg-white text-xs font-semibold"><SelectValue placeholder="Choose table" /></SelectTrigger>
                 <SelectContent>
                 {tables.map((tbl) => (
                   <SelectItem key={tbl.id} value={String(tbl.id)}>

@@ -425,11 +425,17 @@ export function PosProvider({ children }: { children: ReactNode }) {
         res = await send(token);
       }
       if (res.ok) {
+        const updatedOrder = await res.json();
+        setOrders(current => current.map(order => order.id === orderId ? updatedOrder : order));
         showToast(`Order status updated to ${status}`);
-        await fetchData();
+        void fetchData();
+      } else {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'Unable to update order status');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to update order status:', err);
+      showToast(err.message || 'Unable to update order status');
     }
   };
 

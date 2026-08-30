@@ -8,7 +8,7 @@ export default function OrderCartItemRow({ item }: { item: CartItem }) {
   return (
     <div
       id={`cart-row-${item.cartItemId}`}
-      className="p-3 rounded-xl bg-slate-50 border border-slate-200/90 hover:border-indigo-200 transition flex flex-col gap-2"
+      className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/90 hover:border-indigo-200 transition flex flex-col gap-3"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
@@ -34,31 +34,33 @@ export default function OrderCartItemRow({ item }: { item: CartItem }) {
           {formatCurrency(item.price)} each
         </span>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <button
             id={`cart-minus-${item.cartItemId}`}
             onClick={() => updateCartItemQty(item.cartItemId, -1)}
-            className="w-6 h-6 rounded-md bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 flex items-center justify-center transition cursor-pointer shadow-2xs"
+            className="size-9 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 flex items-center justify-center transition cursor-pointer shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            aria-label={`Decrease ${item.name} quantity`}
           >
-            <Minus className="w-3 h-3" />
+            <Minus className="size-4" />
           </button>
-          <span className="w-6 text-center text-xs font-bold text-slate-800">
+          <span className="min-w-7 text-center text-sm font-extrabold text-slate-800" aria-label={`Quantity ${item.quantity}`}>
             {item.quantity}
           </span>
           <button
             id={`cart-plus-${item.cartItemId}`}
             onClick={() => updateCartItemQty(item.cartItemId, 1)}
-            className="w-6 h-6 rounded-md bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 flex items-center justify-center transition cursor-pointer shadow-2xs"
+            className="size-9 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 flex items-center justify-center transition cursor-pointer shadow-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+            aria-label={`Increase ${item.name} quantity`}
           >
-            <Plus className="w-3 h-3" />
+            <Plus className="size-4" />
           </button>
           <button
             id={`cart-del-${item.cartItemId}`}
             onClick={() => removeCartItem(item.cartItemId)}
-            className="w-6 h-6 ml-1 rounded-md hover:bg-rose-50 text-slate-400 hover:text-rose-600 flex items-center justify-center transition cursor-pointer"
+            className="size-9 ml-1 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 flex items-center justify-center transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
             title="Remove item"
           >
-            <Trash2 className="w-3 h-3" />
+            <Trash2 className="size-4" />
           </button>
         </div>
       </div>
