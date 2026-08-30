@@ -16,6 +16,12 @@ export interface CartItem extends OrderItem {
   cartItemId: string;
 }
 
+export interface OrderConflict {
+  expectedVersion: number;
+  actualVersion: number;
+  latestOrder: Order;
+}
+
 interface PosContextType {
   activeView: ActiveView;
   setActiveView: (view: ActiveView) => void;
@@ -65,6 +71,9 @@ interface PosContextType {
   // Backend Operations
   fetchData: () => Promise<void>;
   submitOrder: () => Promise<Order | null>;
+  orderConflict: OrderConflict | null;
+  dismissOrderConflict: () => void;
+  loadLatestOrderAfterConflict: () => void;
   updateOrderStatus: (orderId: number, status: string) => Promise<void>;
   updateOrderItemStatus: (itemId: number, status: string) => Promise<void>;
   processPayment: (orderId: number, amount: number, method: string, tipAmount?: number, tenderedAmount?: number, idempotencyKey?: string) => Promise<Order | null>;
@@ -116,6 +125,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
   const [customTipCents, setCustomTipCents] = useState<number>(0);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [checkoutOrder, setCheckoutOrder] = useState<Order | null>(null);
+  const [orderConflict, setOrderConflict] = useState<OrderConflict | null>(null);
 
   // Modals & UI State
   const [activeCustomizingItem, setActiveCustomizingItem] = useState<MenuItem | null>(null);
@@ -325,6 +335,14 @@ export function PosProvider({ children }: { children: ReactNode }) {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Order creation failed' }));
+        if (res.status === 409 && errorData.code === 'ORDER_CONFLICT' && errorData.latestOrder) {
+          setOrderConflict({
+            expectedVersion: Number(errorData.expectedVersion),
+            actualVersion: Number(errorData.actualVersion),
+            latestOrder: errorData.latestOrder as Order,
+          });
+          return null;
+        }
         throw new Error(errorData.error || 'Order creation failed');
       }
       const createdOrder = await res.json();
@@ -341,6 +359,14 @@ export function PosProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const dismissOrderConflict = () => setOrderConflict(null);
+  const loadLatestOrderAfterConflict = () => {
+    if (!orderConflict) return;
+    loadOrderToCart(orderConflict.latestOrder);
+    setOrderConflict(null);
+    showToast(`Loaded the latest ${orderConflict.latestOrder.orderNumber}. Review it before saving.`);
   };
 
   const updateOrderStatus = async (orderId: number, status: string) => {
@@ -460,6 +486,9 @@ export function PosProvider({ children }: { children: ReactNode }) {
         total,
         fetchData,
         submitOrder,
+        orderConflict,
+        dismissOrderConflict,
+        loadLatestOrderAfterConflict,
         updateOrderStatus,
         updateOrderItemStatus,
         processPayment,

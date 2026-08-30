@@ -15,6 +15,8 @@ import {
   Receipt,
   CheckCircle2,
   ArrowRight,
+  RefreshCw,
+  ShieldAlert,
 } from 'lucide-react';
 import { Order, OrderType } from '../types.ts';
 
@@ -43,6 +45,9 @@ export default function OrderCartPanel() {
     total,
     clearCart,
     submitOrder,
+    orderConflict,
+    dismissOrderConflict,
+    loadLatestOrderAfterConflict,
     setPaymentModalOpen,
     isSubmitting,
     setActiveView,
@@ -304,6 +309,7 @@ export default function OrderCartPanel() {
         </div>
       </div>
       {sentOrder && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4 backdrop-blur-xs"><section className="w-full max-w-sm rounded-2xl bg-white p-6 text-center shadow-2xl"><div className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-100 text-emerald-700"><CheckCircle2 className="size-6" /></div><p className="mt-4 text-xs font-bold uppercase tracking-wider text-emerald-700">Order sent</p><h2 className="mt-1 text-xl font-extrabold tracking-tight text-slate-900">{sentOrder.orderNumber}</h2><p className="mx-auto mt-2 max-w-xs text-sm leading-6 text-slate-500">The ticket is saved and visible to the kitchen. Choose the next forward action.</p><button onClick={() => { setSentOrder(null); setActiveView('orders'); }} className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3 text-sm font-bold text-white hover:bg-indigo-700">Track this order<ArrowRight className="size-4" /></button><button onClick={() => setSentOrder(null)} className="mt-2 w-full rounded-xl py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100">Start next order</button></section></div>}
+      {orderConflict && <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/65 p-4 backdrop-blur-sm"><section role="alertdialog" aria-modal="true" aria-labelledby="order-conflict-title" className="w-full max-w-md overflow-hidden rounded-2xl border border-amber-200 bg-white text-slate-900 shadow-2xl"><header className="flex items-start gap-3 border-b border-amber-100 bg-amber-50 p-5"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-amber-100 text-amber-700"><ShieldAlert className="size-5" /></span><div><p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Update conflict</p><h2 id="order-conflict-title" className="mt-0.5 text-lg font-extrabold">Review the latest order first</h2></div></header><div className="space-y-4 p-5"><p className="text-sm leading-6 text-slate-600">Another terminal saved <strong>{orderConflict.latestOrder.orderNumber}</strong> after you opened it. Your current draft is still here and has not been discarded.</p><div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm"><div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Your starting version</p><p className="mt-1 font-bold">Version {orderConflict.expectedVersion}</p></div><div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Latest saved version</p><p className="mt-1 font-bold text-amber-700">Version {orderConflict.actualVersion}</p></div><div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Latest items</p><p className="mt-1 font-bold">{orderConflict.latestOrder.items?.reduce((sum, item) => sum + item.quantity, 0) ?? 0}</p></div><div><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Latest total</p><p className="mt-1 font-bold">{formatCurrency(orderConflict.latestOrder.total)}</p></div></div><p className="text-xs leading-5 text-slate-500">Load the latest saved order to continue editing safely. Choose “Keep my draft” if you need to note or compare your unsaved changes first.</p><div className="grid gap-2 sm:grid-cols-2"><button onClick={dismissOrderConflict} className="rounded-xl border border-slate-200 px-4 py-3 text-xs font-bold text-slate-700 hover:bg-slate-50">Keep my draft</button><button onClick={loadLatestOrderAfterConflict} className="flex items-center justify-center gap-2 rounded-xl bg-amber-600 px-4 py-3 text-xs font-bold text-white hover:bg-amber-700"><RefreshCw className="size-4" />Load latest order</button></div></div></section></div>}
     </div>
   );
 }

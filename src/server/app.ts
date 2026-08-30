@@ -631,7 +631,17 @@ app.put('/api/orders/:id', requirePermission('orders.write'), async (req: AuthRe
     res.json(order);
   } catch (error: any) {
     const message = error?.cause?.message || error?.message || 'Order update failed';
-    res.status(message.includes('ORDER_CONFLICT') ? 409 : 400).json({ error: message.includes('ORDER_CONFLICT') ? 'This order changed on another terminal. Reload it before saving.' : message });
+    if (message.includes('ORDER_CONFLICT')) {
+      const latestOrder = await getOrderById(req.terminal!.restaurantId, req.terminal!.locationId, Number(req.params.id));
+      return res.status(409).json({
+        error: 'This order was updated on another terminal. Your draft has been preserved.',
+        code: 'ORDER_CONFLICT',
+        expectedVersion: Number(req.body.expectedVersion),
+        actualVersion: latestOrder?.version ?? null,
+        latestOrder,
+      });
+    }
+    res.status(400).json({ error: message });
   }
 });
 
