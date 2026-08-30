@@ -39,6 +39,7 @@ import { membershipRemovalError } from '../auth/clientLifecycle.ts';
 import { adjustInventory, createInventoryItem, listInventory, replaceMenuItemRecipe } from '../db/inventory.ts';
 import { clampInteger } from '../domain/posRules.ts';
 import { APPROVAL_ACTIONS, consumeManagerApproval, createManagerApproval, type ApprovalAction } from '../db/approvals.ts';
+import { claimNextPrintJob, completePrintJob, createPrinterProfile, createTestPrintJob, listPrinterProfiles, listPrintJobs, retryPrintJob } from '../db/printing.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -716,6 +717,43 @@ app.put('/api/menu-items/:id/recipe', requirePermission('inventory.manage'), asy
   } catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to save recipe' }); }
 });
 
+app.get('/api/printers', requirePermission('terminals.manage'), async (req: AuthRequest, res) => {
+  res.json(await listPrinterProfiles(req.terminal!.restaurantId, req.terminal!.locationId));
+});
+
+app.post('/api/printers', requirePermission('terminals.manage'), async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body.name || '').trim(); const jobType = String(req.body.jobType || 'kitchen'); const connectionType = String(req.body.connectionType || 'browser');
+    if (name.length < 2 || name.length > 80 || !['kitchen', 'receipt'].includes(jobType) || !['browser', 'network', 'usb'].includes(connectionType)) return res.status(400).json({ error: 'Valid printer name, job type, and connection type are required' });
+    const stations = Array.isArray(req.body.stations) ? req.body.stations.map((value: any) => String(value).trim().toLowerCase()).filter(Boolean).slice(0, 20) : [];
+    res.status(201).json(await createPrinterProfile({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, name, jobType, connectionType, address: String(req.body.address || '').trim().slice(0, 200), stations }));
+  } catch (error: any) { res.status(400).json({ error: error?.cause?.message || error?.message || 'Unable to create printer profile' }); }
+});
+
+app.post('/api/printers/:id/test', requirePermission('terminals.manage'), async (req: AuthRequest, res) => {
+  try { res.status(201).json(await createTestPrintJob({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, printerProfileId: Number(req.params.id), actorName: req.staff!.name || 'Staff' })); }
+  catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to queue test print' }); }
+});
+
+app.get('/api/print-jobs', async (req: AuthRequest, res) => {
+  const statuses = String(req.query.statuses || 'pending,processing,failed,dead').split(',').filter(value => ['pending', 'processing', 'failed', 'dead', 'succeeded'].includes(value));
+  res.json(await listPrintJobs(req.terminal!.restaurantId, req.terminal!.locationId, statuses));
+});
+
+app.post('/api/print-jobs/claim', async (req: AuthRequest, res) => {
+  res.json({ job: await claimNextPrintJob(req.terminal!.restaurantId, req.terminal!.locationId, req.terminal!.id) });
+});
+
+app.post('/api/print-jobs/:id/result', async (req: AuthRequest, res) => {
+  try { res.json(await completePrintJob(req.terminal!.restaurantId, req.terminal!.locationId, req.terminal!.id, Number(req.params.id), req.body.success === true, req.body.error)); }
+  catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to complete print job' }); }
+});
+
+app.post('/api/print-jobs/:id/retry', requirePermission('terminals.manage'), async (req: AuthRequest, res) => {
+  const job = await retryPrintJob(req.terminal!.restaurantId, req.terminal!.locationId, Number(req.params.id));
+  if (!job) return res.status(404).json({ error: 'Failed print job not found' }); res.json(job);
+});
+
 // Tables
 app.get('/api/tables', async (req: AuthRequest, res) => {
   try {
@@ -804,7 +842,7 @@ app.post('/api/orders', requirePermission('orders.write'), async (req: AuthReque
   try {
     if (!['dine-in', 'takeout', 'delivery', 'bar'].includes(String(req.body.orderType))) return res.status(400).json({ error: 'Invalid order type' });
     if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply') && !await hasManagerApproval(req, 'order.discount')) return res.status(428).json({ error: 'Manager approval is required to apply a discount', code: 'APPROVAL_REQUIRED', action: 'order.discount' });
-    const order = await createOrder({ orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
+    const order = await createOrder({ orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.created', entityType: 'order', entityId: String(order!.id), metadata: { total: order!.total } });
     res.status(201).json(order);
   } catch (error: any) {
@@ -820,7 +858,7 @@ app.put('/api/orders/:id', requirePermission('orders.write'), async (req: AuthRe
     if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply') && !await hasManagerApproval(req, 'order.discount', String(req.params.id))) return res.status(428).json({ error: 'Manager approval is required to apply a discount', code: 'APPROVAL_REQUIRED', action: 'order.discount', entityId: String(req.params.id) });
     const expectedVersion = Number(req.body.expectedVersion);
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) return res.status(400).json({ error: 'A valid order version is required' });
-    const order = await replaceOrder({ orderId: Number(req.params.id), expectedVersion, orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
+    const order = await replaceOrder({ orderId: Number(req.params.id), expectedVersion, orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.updated', entityType: 'order', entityId: String(order!.id), metadata: { version: order!.version } });
     res.json(order);
   } catch (error: any) {
@@ -887,6 +925,7 @@ app.post('/api/orders/:id/pay', requirePermission('payments.process'), async (re
       transactionRef,
       idempotencyKey: String(idempotencyKey || ''),
       tenderedAmount,
+      terminalId: req.terminal!.id,
     });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'payment.recorded', entityType: 'order', entityId: String(id), metadata: { amount, method, idempotencyKey } });
     res.json(order);

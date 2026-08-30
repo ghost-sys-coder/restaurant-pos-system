@@ -11,6 +11,7 @@ import {
   restaurants,
 } from './schema.ts';
 import { consumeOrderItemInventory } from './inventory.ts';
+import { enqueuePrintJobs } from './printing.ts';
 
 // Categories
 export async function getCategories(restaurantId: number) {
@@ -221,6 +222,7 @@ export async function createOrder(data: {
   notes?: string;
   guestCount?: number;
   createdByStaffId?: number;
+  terminalId?: number;
   items: Array<{
     menuItemId: number;
     quantity: number;
@@ -256,6 +258,7 @@ export async function createOrder(data: {
       const orderNumber = `L${data.locationId}-${String(created.id).padStart(6, '0')}`;
       await tx.update(orders).set({ orderNumber }).where(eq(orders.id, created.id));
       await tx.insert(orderItems).values(priced.map((item: any) => ({ ...item, orderId: created.id, itemStatus: 'sent' })));
+      await enqueuePrintJobs(tx, { restaurantId: data.restaurantId, locationId: data.locationId, terminalId: data.terminalId, orderId: created.id, jobType: 'kitchen', eventKey: `order:${created.id}:created`, stations: Array.from(new Set(priced.map((item: any) => item.kitchenStation))), payload: { orderId: created.id, orderNumber, orderType: data.orderType, tableId: data.tableId || null, serverName: data.serverName, notes: data.notes || null, items: priced } });
       if (data.tableId) await tx.update(restaurantTables).set({ status: 'occupied', currentOrderId: created.id }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));
       return created.id;
     });
@@ -298,6 +301,7 @@ export async function replaceOrder(data: Parameters<typeof createOrder>[0] & { o
     const discountRateBps = clampInteger(data.discountPercent ?? 0, 0, 100) * 100;
     await tx.delete(orderItems).where(eq(orderItems.orderId, current.id));
     await tx.insert(orderItems).values(priced.map((item: any) => ({ ...item, orderId: current.id, itemStatus: 'sent' })));
+    await enqueuePrintJobs(tx, { restaurantId: data.restaurantId, locationId: data.locationId, terminalId: data.terminalId, orderId: current.id, jobType: 'kitchen', eventKey: `order:${current.id}:version:${current.version + 1}`, stations: Array.from(new Set(priced.map((item: any) => item.kitchenStation))), payload: { orderId: current.id, orderNumber: current.orderNumber, orderType: data.orderType, tableId: data.tableId || null, serverName: data.serverName, notes: data.notes || null, items: priced, reprintReason: 'Order updated' } });
     const changed = await tx.update(orders).set({ orderType: data.orderType, tableId: data.tableId || null, customerName: data.customerName || null, customerPhone: data.customerPhone || null, notes: data.notes || null, guestCount: data.guestCount || 1, discountRateBps, ...totals, tip, total: totals.total + tip, version: current.version + 1 }).where(and(eq(orders.id, current.id), eq(orders.version, data.expectedVersion))).returning({ id: orders.id });
     if (!changed[0]) throw new Error('ORDER_CONFLICT');
     if (current.tableId && current.tableId !== data.tableId) await tx.update(restaurantTables).set({ status: 'available', currentOrderId: null }).where(and(eq(restaurantTables.id, current.tableId), eq(restaurantTables.locationId, data.locationId)));
@@ -350,6 +354,7 @@ export async function processPayment(restaurantId: number, locationId: number, o
   transactionRef?: string;
   idempotencyKey: string;
   tenderedAmount?: number;
+  terminalId?: number;
 }) {
   try {
     if (!/^[A-Za-z0-9:_-]{16,128}$/.test(data.idempotencyKey)) throw new Error('A valid payment idempotency key is required');
@@ -377,6 +382,7 @@ export async function processPayment(restaurantId: number, locationId: number, o
       const nextPaymentState = paymentState(adjustedTotal, paid);
       const isPaid = nextPaymentState === 'paid';
       await tx.update(orders).set({ paymentStatus: nextPaymentState, paymentMethod: isPaid ? data.method : 'split', status: isPaid ? 'completed' : order.status, tip: order.tip + tip, total: adjustedTotal, completedAt: isPaid ? new Date() : null, version: order.version + 1 }).where(eq(orders.id, orderId));
+      if (isPaid) await enqueuePrintJobs(tx, { restaurantId, locationId, terminalId: data.terminalId, orderId, jobType: 'receipt', eventKey: `order:${orderId}:paid`, payload: { orderId, orderNumber: order.orderNumber, currency: order.currency, subtotal: order.subtotal, discount: order.discount, tax: order.tax, tip: order.tip + tip, total: adjustedTotal, paid, method: data.method, transactionRef: data.transactionRef } });
       if (isPaid && order.tableId) await tx.update(restaurantTables).set({ status: 'cleaning', currentOrderId: null }).where(and(eq(restaurantTables.id, order.tableId), eq(restaurantTables.locationId, locationId)));
     });
     return await getOrderById(restaurantId, locationId, orderId);
