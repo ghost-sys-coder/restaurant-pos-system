@@ -1,5 +1,8 @@
+import { useEffect, useState } from 'react';
 import { usePos } from '../context/PosContext.tsx';
+import { useAuth } from '../context/AuthContext.tsx';
 import { formatCurrency } from '../utils/formatters.ts';
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import {
   BarChart3,
   DollarSign,
@@ -17,8 +20,44 @@ import {
   Truck,
 } from 'lucide-react';
 
+type DailyPerformance = { date: string; revenue: number; orders: number; averageTicket: number };
+type PerformanceResponse = { dailyTrend: DailyPerformance[]; timezone: string };
+const performanceCache = new Map<number, PerformanceResponse>();
+
+const shortDate = (value: string) => new Date(`${value}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+const compactNumber = (value: number) => new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+
 export default function ReportsView() {
   const { orders } = usePos();
+  const { terminal } = useAuth();
+  const cacheKey = terminal?.locationId ?? 0;
+  const cachedPerformance = performanceCache.get(cacheKey);
+  const [performance, setPerformance] = useState<PerformanceResponse | null>(cachedPerformance ?? null);
+  const [performanceLoading, setPerformanceLoading] = useState(!cachedPerformance);
+  const [performanceError, setPerformanceError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadPerformance = async () => {
+      if (!cachedPerformance) setPerformanceLoading(true);
+      setPerformanceError('');
+      try {
+        const start = new Date();
+        start.setDate(start.getDate() - 29);
+        start.setHours(0, 0, 0, 0);
+        const response = await fetch(`/api/analytics?start=${encodeURIComponent(start.toISOString())}`, { signal: controller.signal });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || 'Unable to load performance history');
+        const next = { dailyTrend: body.dailyTrend || [], timezone: body.timezone || 'UTC' };
+        performanceCache.set(cacheKey, next);
+        setPerformance(next);
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') setPerformanceError(error?.message || 'Unable to load performance history');
+      } finally { setPerformanceLoading(false); }
+    };
+    void loadPerformance();
+    return () => controller.abort();
+  }, [cacheKey]);
 
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
@@ -104,6 +143,14 @@ export default function ReportsView() {
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 5);
 
+  const performanceDays = performance?.dailyTrend ?? [];
+  const periodRevenue = performanceDays.reduce((sum, day) => sum + day.revenue, 0);
+  const periodOrders = performanceDays.reduce((sum, day) => sum + day.orders, 0);
+  const periodAverageTicket = periodOrders ? Math.round(periodRevenue / periodOrders) : 0;
+  const recentSevenDayRevenue = performanceDays.slice(-7).reduce((sum, day) => sum + day.revenue, 0);
+  const previousSevenDayRevenue = performanceDays.slice(-14, -7).reduce((sum, day) => sum + day.revenue, 0);
+  const weeklyRevenueChange = previousSevenDayRevenue > 0 ? Math.round(((recentSevenDayRevenue - previousSevenDayRevenue) / previousSevenDayRevenue) * 100) : null;
+
   const handlePrintZReport = () => {
     window.print();
   };
@@ -111,8 +158,9 @@ export default function ReportsView() {
   return (
     <div
       id="reports-analytics-view"
-      className="flex-1 flex flex-col h-full overflow-hidden bg-slate-50 p-4 lg:p-6 space-y-6 text-slate-900"
+      className="flex-1 h-full overflow-y-auto bg-slate-50 p-4 lg:p-6 text-slate-900"
     >
+      <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shrink-0 border-b border-slate-200 pb-4">
         <div>
@@ -261,7 +309,7 @@ export default function ReportsView() {
       </div>
 
       {/* Main Content: Payment Mix & Top Selling Menu Items */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-5 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-200">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Payment Tender Breakdown */}
         <div className="p-5 rounded-xl bg-white border border-slate-200 shadow-xs flex flex-col space-y-4">
           <div className="flex items-center gap-2">
@@ -381,6 +429,30 @@ export default function ReportsView() {
             )}
           </div>
         </div>
+      </div>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/50">
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2"><TrendingUp className="size-4 text-indigo-600" /><h3 className="font-bold text-slate-900">Business performance over time</h3></div>
+            <p className="mt-1 text-xs text-slate-500">Paid orders for the last 30 business days in {performance?.timezone || 'the location timezone'}.</p>
+          </div>
+          {weeklyRevenueChange !== null && <div className="rounded-xl bg-indigo-50 px-3 py-2 text-right"><p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">7-day revenue change</p><p className="mt-0.5 font-mono text-sm font-bold text-indigo-800">{weeklyRevenueChange > 0 ? '+' : ''}{weeklyRevenueChange}%</p></div>}
+        </div>
+
+        <div className="grid gap-px border-b border-slate-100 bg-slate-100 sm:grid-cols-3">
+          <div className="bg-white px-5 py-4"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">30-day revenue</p><p className="mt-1 font-mono text-lg font-bold text-slate-900">{formatCurrency(periodRevenue)}</p></div>
+          <div className="bg-white px-5 py-4"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Completed orders</p><p className="mt-1 font-mono text-lg font-bold text-slate-900">{periodOrders.toLocaleString()}</p></div>
+          <div className="bg-white px-5 py-4"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Average ticket</p><p className="mt-1 font-mono text-lg font-bold text-slate-900">{formatCurrency(periodAverageTicket)}</p></div>
+        </div>
+
+        <div className="p-5">
+          {performanceLoading && !performance ? <div className="grid gap-5 lg:grid-cols-2"><div className="h-80 animate-pulse rounded-xl bg-slate-100" /><div className="h-80 animate-pulse rounded-xl bg-slate-100" /></div> : performanceError && !performance ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700">{performanceError}</div> : performanceDays.length ? <div className="grid gap-6 lg:grid-cols-2">
+            <article className="min-w-0"><div><h4 className="text-sm font-bold text-slate-800">Daily revenue</h4><p className="mt-0.5 text-xs text-slate-500">Gross revenue from paid orders, including zero-sales days.</p></div><div className="mt-4 h-72 w-full" aria-label="Daily revenue chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={performanceDays} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} accessibilityLayer><CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" /><XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 11, fill: '#64748b' }} tickLine={false} axisLine={{ stroke: '#cbd5e1' }} minTickGap={24} /><YAxis width={54} tickFormatter={compactNumber} tick={{ fontSize: 11, fill: '#64748b' }} tickLine={false} axisLine={false} /><Tooltip labelFormatter={label => shortDate(String(label))} formatter={value => [formatCurrency(Number(value)), 'Revenue']} contentStyle={{ borderRadius: 12, borderColor: '#e2e8f0', boxShadow: '0 8px 24px rgb(15 23 42 / 0.08)' }} /><Area type="monotone" dataKey="revenue" stroke="#4f46e5" strokeWidth={2.5} fill="#e0e7ff" fillOpacity={0.8} activeDot={{ r: 4, fill: '#4f46e5', stroke: '#ffffff', strokeWidth: 2 }} /></AreaChart></ResponsiveContainer></div></article>
+            <article className="min-w-0"><div><h4 className="text-sm font-bold text-slate-800">Completed order volume</h4><p className="mt-0.5 text-xs text-slate-500">Number of paid checks completed each business day.</p></div><div className="mt-4 h-72 w-full" aria-label="Completed order volume chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={performanceDays} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} accessibilityLayer><CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" /><XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 11, fill: '#64748b' }} tickLine={false} axisLine={{ stroke: '#cbd5e1' }} minTickGap={24} /><YAxis width={34} allowDecimals={false} tick={{ fontSize: 11, fill: '#64748b' }} tickLine={false} axisLine={false} /><Tooltip labelFormatter={label => shortDate(String(label))} formatter={value => [Number(value).toLocaleString(), 'Orders']} contentStyle={{ borderRadius: 12, borderColor: '#e2e8f0', boxShadow: '0 8px 24px rgb(15 23 42 / 0.08)' }} /><Bar dataKey="orders" fill="#d97706" radius={[4, 4, 0, 0]} maxBarSize={18} /></BarChart></ResponsiveContainer></div></article>
+          </div> : <div className="grid place-items-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-5 py-12 text-center"><BarChart3 className="size-7 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No performance history yet</p><p className="mt-1 text-xs text-slate-500">Completed paid orders will appear here over time.</p></div>}
+        </div>
+      </section>
       </div>
     </div>
   );

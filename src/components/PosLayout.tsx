@@ -1,10 +1,10 @@
+import { lazy, Suspense } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import Navbar from './Navbar.tsx';
 import PosRegisterView from './PosRegisterView.tsx';
 import TableManagementView from './TableManagementView.tsx';
 import KitchenDisplayView from './KitchenDisplayView.tsx';
 import OrdersListView from './OrdersListView.tsx';
-import ReportsView from './ReportsView.tsx';
 import MenuManagementView from './MenuManagementView.tsx';
 import ItemCustomizeModal from './ItemCustomizeModal.tsx';
 import PaymentModal from './PaymentModal.tsx';
@@ -14,6 +14,8 @@ import SettingsView from './SettingsView.tsx';
 import InventoryView from './InventoryView.tsx';
 import ManagerApprovalModal from './ManagerApprovalModal.tsx';
 import ConnectionStatus from './ConnectionStatus.tsx';
+
+const ReportsView = lazy(() => import('./ReportsView.tsx'));
 
 export default function PosLayout() {
   const { activeView, isLoading } = usePos();
@@ -37,7 +39,7 @@ export default function PosLayout() {
             {activeView === 'tables' && <TableManagementView />}
             {activeView === 'kds' && <KitchenDisplayView />}
             {activeView === 'orders' && <OrdersListView />}
-            {activeView === 'reports' && <ReportsView />}
+            {activeView === 'reports' && <Suspense fallback={<div className="grid flex-1 place-items-center bg-slate-50"><div className="size-8 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent" /></div>}><ReportsView /></Suspense>}
             {activeView === 'menu_manager' && <MenuManagementView />}
             {activeView === 'inventory' && <InventoryView />}
             {activeView === 'settings' && <SettingsView />}

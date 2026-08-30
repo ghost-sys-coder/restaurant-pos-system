@@ -9,9 +9,11 @@ import {
   orderItems,
   payments,
   restaurants,
+  locations,
 } from './schema.ts';
 import { consumeOrderItemInventory } from './inventory.ts';
 import { enqueuePrintJobs } from './printing.ts';
+import { buildDailyPerformanceTrend } from '../domain/analytics.ts';
 
 // Categories
 export async function getCategories(restaurantId: number) {
@@ -465,6 +467,9 @@ export async function getAnalyticsSummary(restaurantId: number, locationId: numb
       paymentBreakdown[method] = (paymentBreakdown[method] || 0) + p.amount;
     }
 
+    const locationTimezone = (await db.select({ timezone: locations.timezone }).from(locations).where(and(eq(locations.id, locationId), eq(locations.restaurantId, restaurantId))).limit(1))[0]?.timezone || 'UTC';
+    const dailyTrend = buildDailyPerformanceTrend(paidOrders, startAt, locationTimezone);
+
     // Order type breakdown
     const orderTypes = ['dine-in', 'takeout', 'bar', 'delivery'] as const;
     const orderTypeBreakdown: Record<string, { count: number; revenue: number }> = {};
@@ -486,6 +491,8 @@ export async function getAnalyticsSummary(restaurantId: number, locationId: numb
       topSellingItems,
       paymentBreakdown,
       orderTypeBreakdown,
+      dailyTrend,
+      timezone: locationTimezone,
     };
   } catch (error) {
     console.error('Failed to get analytics summary:', error);
