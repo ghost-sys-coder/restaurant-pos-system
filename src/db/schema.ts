@@ -206,25 +206,6 @@ export const printerProfiles = pgTable('printer_profiles', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => [uniqueIndex('printer_profiles_location_name_unique').on(table.locationId, table.name)]);
 
-export const printJobs = pgTable('print_jobs', {
-  id: serial('id').primaryKey(),
-  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
-  locationId: integer('location_id').references(() => locations.id).notNull(),
-  terminalId: integer('terminal_id').references(() => terminals.id),
-  printerProfileId: integer('printer_profile_id').references(() => printerProfiles.id).notNull(),
-  orderId: integer('order_id'),
-  jobType: text('job_type').notNull(),
-  status: text('status').default('pending').notNull(),
-  attempts: integer('attempts').default(0).notNull(),
-  idempotencyKey: text('idempotency_key').notNull().unique(),
-  payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
-  lastError: text('last_error'),
-  availableAt: timestamp('available_at').defaultNow().notNull(),
-  leaseExpiresAt: timestamp('lease_expires_at'),
-  completedAt: timestamp('completed_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-}, (table) => [index('print_jobs_location_status_idx').on(table.locationId, table.status, table.availableAt)]);
-
 // Restaurant Tables
 export const restaurantTables = pgTable('restaurant_tables', {
   id: serial('id').primaryKey(),
@@ -268,6 +249,25 @@ export const orders = pgTable('orders', {
   createdAt: timestamp('created_at').defaultNow(),
   completedAt: timestamp('completed_at'),
 });
+
+export const printJobs = pgTable('print_jobs', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  terminalId: integer('terminal_id').references(() => terminals.id),
+  printerProfileId: integer('printer_profile_id').references(() => printerProfiles.id).notNull(),
+  orderId: integer('order_id').references(() => orders.id),
+  jobType: text('job_type').notNull(),
+  status: text('status').default('pending').notNull(),
+  attempts: integer('attempts').default(0).notNull(),
+  idempotencyKey: text('idempotency_key').notNull().unique(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+  lastError: text('last_error'),
+  availableAt: timestamp('available_at').defaultNow().notNull(),
+  leaseExpiresAt: timestamp('lease_expires_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [index('print_jobs_location_status_idx').on(table.locationId, table.status, table.availableAt)]);
 
 // Order Items
 export const orderItems = pgTable('order_items', {
