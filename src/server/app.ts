@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
+import { randomUUID } from 'node:crypto';
 import {
   getCategories,
   createCategory,
@@ -35,6 +36,8 @@ import { deleteMenuImage, uploadMenuImage } from '../lib/cloudinary.ts';
 import { apiDiagnostics } from './httpDiagnostics.ts';
 import { ClerkAccessEvent, publicClerkName } from '../auth/clerkWebhook.ts';
 import { membershipRemovalError } from '../auth/clientLifecycle.ts';
+import { adjustInventory, createInventoryItem, listInventory, replaceMenuItemRecipe } from '../db/inventory.ts';
+import { clampInteger } from '../domain/posRules.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -662,6 +665,38 @@ app.delete('/api/menu-items/:id', requirePermission('menu.manage'), async (req: 
     const message = error?.cause?.message || error?.message || 'Failed to delete menu item';
     res.status(500).json({ error: message });
   }
+});
+
+app.get('/api/inventory', requirePermission('inventory.manage'), async (req: AuthRequest, res) => {
+  res.json(await listInventory(req.terminal!.restaurantId, req.terminal!.locationId));
+});
+
+app.post('/api/inventory', requirePermission('inventory.manage'), async (req: AuthRequest, res) => {
+  try {
+    const name = String(req.body.name || '').trim(); const unit = String(req.body.unit || '').trim().toLowerCase();
+    if (name.length < 2 || name.length > 100 || !['each', 'g', 'kg', 'ml', 'l'].includes(unit)) return res.status(400).json({ error: 'A valid inventory name and unit are required' });
+    const item = await createInventoryItem({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, name, sku: String(req.body.sku || '').trim().slice(0, 60), unit, onHandMilliunits: clampInteger(Number(req.body.onHandMilliunits || 0), 0, 1_000_000_000), reorderLevelMilliunits: clampInteger(Number(req.body.reorderLevelMilliunits || 0), 0, 1_000_000_000), costPerUnit: clampInteger(Number(req.body.costPerUnit || 0), 0, 1_000_000_000), actorStaffId: req.staff!.id });
+    res.status(201).json(item);
+  } catch (error: any) { res.status(400).json({ error: error?.cause?.message || error?.message || 'Unable to create inventory item' }); }
+});
+
+app.post('/api/inventory/:id/adjustments', requirePermission('inventory.manage'), async (req: AuthRequest, res) => {
+  try {
+    const deltaMilliunits = clampInteger(Number(req.body.deltaMilliunits), -1_000_000_000, 1_000_000_000);
+    if (!deltaMilliunits) return res.status(400).json({ error: 'Adjustment quantity cannot be zero' });
+    const movementType = String(req.body.movementType || 'adjustment');
+    if (!['receipt', 'waste', 'count', 'adjustment'].includes(movementType)) return res.status(400).json({ error: 'Invalid stock movement type' });
+    const reason = String(req.body.reason || '').trim().slice(0, 250);
+    if (!reason) return res.status(400).json({ error: 'An adjustment reason is required' });
+    res.json(await adjustInventory({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, inventoryItemId: Number(req.params.id), deltaMilliunits, movementType, reason, actorStaffId: req.staff!.id, sourceKey: `manual:${randomUUID()}` }));
+  } catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to adjust inventory' }); }
+});
+
+app.put('/api/menu-items/:id/recipe', requirePermission('inventory.manage'), async (req: AuthRequest, res) => {
+  try {
+    const ingredients = Array.isArray(req.body.ingredients) ? req.body.ingredients.map((value: any) => ({ inventoryItemId: Number(value.inventoryItemId), quantityMilliunits: Number(value.quantityMilliunits) })) : [];
+    res.json(await replaceMenuItemRecipe(req.terminal!.restaurantId, req.terminal!.locationId, Number(req.params.id), ingredients));
+  } catch (error: any) { res.status(400).json({ error: error?.message || 'Unable to save recipe' }); }
 });
 
 // Tables

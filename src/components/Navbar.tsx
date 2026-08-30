@@ -20,6 +20,7 @@ import {
   Settings,
   Power,
   LoaderCircle,
+  Boxes,
 } from 'lucide-react';
 import { ActiveView } from '../types.ts';
 import { Badge } from '@/components/ui/badge';
@@ -94,6 +95,7 @@ export default function Navbar() {
     { view: 'orders', label: 'Orders', icon: ReceiptText },
     { view: 'reports', label: 'Analytics', icon: BarChart3, permission: 'reports.view' },
     { view: 'menu_manager', label: 'Menu', icon: BookOpen, permission: 'menu.manage' },
+    { view: 'inventory', label: 'Inventory', icon: Boxes, permission: 'inventory.manage' },
     { view: 'settings', label: 'Settings', icon: Settings, permission: 'staff.manage' },
   ] as Array<{ view: ActiveView; label: string; icon: any; permission?: string }>).filter(item => !item.permission || permissions.includes(item.permission));
 

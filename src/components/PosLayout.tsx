@@ -11,6 +11,7 @@ import PaymentModal from './PaymentModal.tsx';
 import ReceiptModal from './ReceiptModal.tsx';
 import NotificationToast from './NotificationToast.tsx';
 import SettingsView from './SettingsView.tsx';
+import InventoryView from './InventoryView.tsx';
 
 export default function PosLayout() {
   const { activeView, isLoading } = usePos();
@@ -35,6 +36,7 @@ export default function PosLayout() {
             {activeView === 'orders' && <OrdersListView />}
             {activeView === 'reports' && <ReportsView />}
             {activeView === 'menu_manager' && <MenuManagementView />}
+            {activeView === 'inventory' && <InventoryView />}
             {activeView === 'settings' && <SettingsView />}
           </>
         )}

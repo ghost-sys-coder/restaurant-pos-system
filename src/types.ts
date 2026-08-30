@@ -127,4 +127,4 @@ export interface Order {
   payments?: Payment[];
 }
 
-export type ActiveView = 'register' | 'tables' | 'kds' | 'orders' | 'reports' | 'menu_manager' | 'settings';
+export type ActiveView = 'register' | 'tables' | 'kds' | 'orders' | 'reports' | 'menu_manager' | 'inventory' | 'settings';

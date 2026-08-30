@@ -137,6 +137,45 @@ export const menuItems = pgTable('menu_items', {
   archivedAt: timestamp('archived_at'),
 });
 
+export const inventoryItems = pgTable('inventory_items', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  name: text('name').notNull(),
+  sku: text('sku'),
+  unit: text('unit').notNull(),
+  onHandMilliunits: integer('on_hand_milliunits').default(0).notNull(),
+  reorderLevelMilliunits: integer('reorder_level_milliunits').default(0).notNull(),
+  costPerUnit: integer('cost_per_unit').default(0).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('inventory_items_location_name_unique').on(table.locationId, table.name),
+  uniqueIndex('inventory_items_location_sku_unique').on(table.locationId, table.sku),
+  index('inventory_items_restaurant_location_idx').on(table.restaurantId, table.locationId),
+]);
+
+export const menuItemRecipes = pgTable('menu_item_recipes', {
+  id: serial('id').primaryKey(),
+  menuItemId: integer('menu_item_id').references(() => menuItems.id).notNull(),
+  inventoryItemId: integer('inventory_item_id').references(() => inventoryItems.id).notNull(),
+  quantityMilliunits: integer('quantity_milliunits').notNull(),
+}, (table) => [uniqueIndex('menu_item_recipes_item_stock_unique').on(table.menuItemId, table.inventoryItemId)]);
+
+export const stockMovements = pgTable('stock_movements', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  inventoryItemId: integer('inventory_item_id').references(() => inventoryItems.id).notNull(),
+  deltaMilliunits: integer('delta_milliunits').notNull(),
+  movementType: text('movement_type').notNull(),
+  reason: text('reason'),
+  sourceKey: text('source_key').notNull().unique(),
+  actorStaffId: integer('actor_staff_id').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [index('stock_movements_location_created_idx').on(table.locationId, table.createdAt)]);
+
 // Restaurant Tables
 export const restaurantTables = pgTable('restaurant_tables', {
   id: serial('id').primaryKey(),

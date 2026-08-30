@@ -10,6 +10,7 @@ import {
   payments,
   restaurants,
 } from './schema.ts';
+import { consumeOrderItemInventory } from './inventory.ts';
 
 // Categories
 export async function getCategories(restaurantId: number) {
@@ -323,11 +324,14 @@ export async function updateOrderStatus(restaurantId: number, locationId: number
 
 export async function updateOrderItemStatus(restaurantId: number, locationId: number, itemId: number, itemStatus: string) {
   try {
-    const owned = await db.select({ id: orderItems.id, itemStatus: orderItems.itemStatus }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(and(eq(orderItems.id, itemId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1);
-    if (!owned[0]) return undefined;
-    if (!canTransitionItem(owned[0].itemStatus || '', itemStatus)) throw new Error(`Item cannot move from ${owned[0].itemStatus} to ${itemStatus}`);
-    const res = await db.update(orderItems).set({ itemStatus }).where(eq(orderItems.id, itemId)).returning();
-    return res[0];
+    return await withTransaction(async tx => {
+      const owned = await tx.select({ id: orderItems.id, itemStatus: orderItems.itemStatus }).from(orderItems).innerJoin(orders, eq(orders.id, orderItems.orderId)).where(and(eq(orderItems.id, itemId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1);
+      if (!owned[0]) return undefined;
+      if (!canTransitionItem(owned[0].itemStatus || '', itemStatus)) throw new Error(`Item cannot move from ${owned[0].itemStatus} to ${itemStatus}`);
+      const updated = (await tx.update(orderItems).set({ itemStatus }).where(eq(orderItems.id, itemId)).returning())[0];
+      if (itemStatus === 'served') await consumeOrderItemInventory(tx, restaurantId, locationId, itemId);
+      return updated;
+    });
   } catch (error) {
     console.error('Failed to update order item status:', error);
     throw new Error('Database query failed: updateOrderItemStatus', { cause: error });

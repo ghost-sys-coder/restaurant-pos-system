@@ -11,15 +11,15 @@ export type Permission =
   | 'discounts.apply'
   | 'payments.process' | 'payments.refund'
   | 'tables.manage' | 'kitchen.manage'
-  | 'menu.manage' | 'reports.view'
+  | 'menu.manage' | 'inventory.manage' | 'reports.view'
   | 'staff.manage' | 'terminals.manage';
 
 const rolePermissions: Record<Role, Permission[]> = {
-  restaurant_owner: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
-  restaurant_admin: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
-  general_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
+  restaurant_owner: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'inventory.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
+  restaurant_admin: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'inventory.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
+  general_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'inventory.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
   accountant: ['orders.read', 'reports.view'],
-  shift_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'reports.view'],
+  shift_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'inventory.manage', 'reports.view'],
   cashier: ['orders.read', 'orders.write', 'payments.process', 'tables.manage'],
   server: ['orders.read', 'orders.write', 'tables.manage'],
   bartender: ['orders.read', 'orders.write', 'payments.process', 'tables.manage'],
