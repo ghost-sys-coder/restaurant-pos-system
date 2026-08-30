@@ -36,3 +36,6 @@ export function publicClerkName(data: { first_name?: string | null; last_name?: 
   return [data.first_name, data.last_name].filter(Boolean).join(' ').trim() || data.identifier || 'Back-office user';
 }
 
+export function isBootstrapPlatformMembership(createdByClerkUserId: string | null | undefined, membershipClerkUserId: string) {
+  return Boolean(createdByClerkUserId && createdByClerkUserId === membershipClerkUserId);
+}

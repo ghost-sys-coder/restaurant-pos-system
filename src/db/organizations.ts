@@ -2,7 +2,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { db, withTransaction } from './index.ts';
 import { locations, restaurants, staffSessions, terminals, users, webhookEvents } from './schema.ts';
 import type { BackOfficeRole } from '../types.ts';
-import { ClerkAccessEvent, membershipRole } from '../auth/clerkWebhook.ts';
+import { ClerkAccessEvent, isBootstrapPlatformMembership, membershipRole } from '../auth/clerkWebhook.ts';
 
 export async function createRestaurantRecord(input: { clerkOrganizationId: string; name: string; slug: string; createdByClerkUserId: string }) {
   return withTransaction(async transaction => {
@@ -137,7 +137,15 @@ export async function reconcileClerkAccessEvent(event: ClerkAccessEvent) {
       if (restaurant) {
         const existing = (await transaction.select().from(users).where(and(eq(users.clerkUserId, membershipEvent.clerkUserId), eq(users.restaurantId, restaurant.id))).limit(1))[0];
         const role = membershipRole(membershipEvent);
-        if (membershipEvent.eventType === 'organizationMembership.deleted' || !role) {
+        // Clerk temporarily adds the platform owner as the organization creator.
+        // That bootstrap membership belongs to the agency workspace and must never
+        // become a restaurant staff or PIN profile.
+        if (isBootstrapPlatformMembership(restaurant.createdByClerkUserId, membershipEvent.clerkUserId)) {
+          if (existing) {
+            await transaction.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.id, existing.id));
+            await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, existing.id));
+          }
+        } else if (membershipEvent.eventType === 'organizationMembership.deleted' || !role) {
           if (existing) {
             await transaction.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.id, existing.id));
             await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, existing.id));

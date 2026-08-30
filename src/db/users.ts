@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull, ne, or } from 'drizzle-orm';
 import { db, withTransaction } from './index.ts';
 import { auditEvents, orders, payments, restaurants, staffSessions, users } from './schema.ts';
 
@@ -76,7 +76,13 @@ export async function getAllUsers(restaurantId: number, locationId: number) {
       role: users.role,
       isActive: users.isActive,
       createdAt: users.createdAt,
-    }).from(users).where(and(eq(users.restaurantId, restaurantId), eq(users.locationId, locationId)));
+    }).from(users)
+      .innerJoin(restaurants, eq(restaurants.id, users.restaurantId))
+      .where(and(
+        eq(users.restaurantId, restaurantId),
+        eq(users.locationId, locationId),
+        or(isNull(users.clerkUserId), isNull(restaurants.createdByClerkUserId), ne(users.clerkUserId, restaurants.createdByClerkUserId)),
+      ));
   } catch (error) {
     console.error('Database query failed in getAllUsers:', error);
     throw new Error('Failed to fetch staff users', { cause: error });
