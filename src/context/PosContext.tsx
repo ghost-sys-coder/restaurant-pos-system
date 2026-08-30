@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import {
   ActiveView,
   Category,
@@ -98,7 +98,9 @@ interface PosContextType {
   isLoading: boolean;
   isSubmitting: boolean;
   toastMessage: string | null;
+  toastKind: 'success' | 'error' | 'info';
   showToast: (msg: string) => void;
+  dismissToast: () => void;
   approvalPrompt: ManagerApprovalPrompt | null;
   requestManagerApproval: (action: string, entityId: string | undefined, message: string) => Promise<string | null>;
   closeManagerApproval: (token: string | null) => void;
@@ -146,6 +148,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
   const [addTableModalOpen, setAddTableModalOpen] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastKind, setToastKind] = useState<'success' | 'error' | 'info'>('info');
+  const toastTimer = useRef<number | null>(null);
   const [connectionState, setConnectionState] = useState<'online' | 'degraded' | 'offline'>(navigator.onLine ? 'online' : 'offline');
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
 
@@ -168,9 +172,15 @@ export function PosProvider({ children }: { children: ReactNode }) {
   }, [draftKey, cartItems, orderType, selectedTableId, guestCount, customerName, customerPhone, orderNotes, discountPercent, editingOrder]);
 
   const showToast = (msg: string) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    const isError = /error|failed|unable|incorrect|invalid|cannot|could not|conflict|offline/i.test(msg);
+    const isSuccess = /added|created|saved|updated|sent|processed successfully|cancelled|reserved|moved|ready/i.test(msg) && !isError;
+    setToastKind(isError ? 'error' : isSuccess ? 'success' : 'info');
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
+    if (!isError) toastTimer.current = window.setTimeout(() => setToastMessage(null), 3500);
   };
+  const dismissToast = () => { if (toastTimer.current) window.clearTimeout(toastTimer.current); setToastMessage(null); };
+  useEffect(() => () => { if (toastTimer.current) window.clearTimeout(toastTimer.current); }, []);
 
   const fetchData = async () => {
     try {
@@ -559,7 +569,9 @@ export function PosProvider({ children }: { children: ReactNode }) {
         isLoading,
         isSubmitting,
         toastMessage,
+        toastKind,
         showToast,
+        dismissToast,
         approvalPrompt,
         requestManagerApproval,
         closeManagerApproval,

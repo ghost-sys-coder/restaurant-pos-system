@@ -85,6 +85,8 @@
 
 ### 10. UX & Operational Features
 
+- Operational errors remain visible until dismissed and use distinct alert styling; successful actions dismiss automatically.
+
 - **Auto-refresh Polling** every 10 seconds for tables and orders
 - **Sound Effects**: Add-to-cart beep, kitchen order chime, payment success chime
 - **Toast Notifications** for all major actions (order sent, payment processed, table updated)
