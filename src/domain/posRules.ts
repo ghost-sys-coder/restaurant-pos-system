@@ -1,5 +1,23 @@
 export type PricedLine = { price: number; quantity: number };
 export type ModifierGroup = { name: string; choices: Array<{ name: string; price: number }>; minSelections: number; maxSelections: number; kitchenLabel?: string };
+export type OpenExtra = { name: string; price: number };
+const OPEN_EXTRA_GROUP = 'Open extra';
+
+export function formatOpenExtraSelection(extra: OpenExtra) {
+  const name = String(extra.name || '').trim();
+  const price = clampInteger(Number(extra.price || 0), 0, 10_000_000);
+  if (name.length < 2 || name.length > 60 || /[:,\[\]]/.test(name)) throw new Error('An unlisted extra needs a 2 to 60 character name without commas, colons, or brackets');
+  return `${OPEN_EXTRA_GROUP}: ${name} [UGX ${price}]`;
+}
+
+export function parseOpenExtras(selectedOptions?: string): OpenExtra[] {
+  if (!selectedOptions) return [];
+  return selectedOptions.split(',').map(value => value.trim()).filter(value => value.startsWith(`${OPEN_EXTRA_GROUP}:`)).map(value => {
+    const match = value.match(/^Open extra:\s+([^\[\]]{2,60})\s+\[UGX\s+(\d+)\]$/);
+    if (!match) throw new Error('An unlisted extra has an invalid format');
+    return { name: match[1].trim(), price: clampInteger(Number(match[2]), 0, 10_000_000) };
+  });
+}
 
 export function normalizeModifierGroups(value: unknown): ModifierGroup[] {
   if (value == null || value === '') return [];
@@ -8,7 +26,7 @@ export function normalizeModifierGroups(value: unknown): ModifierGroup[] {
   const names = new Set<string>();
   return raw.map((candidate: any) => {
     const name = String(candidate?.name || '').trim();
-    if (!name || name.length > 60 || names.has(name.toLowerCase())) throw new Error('Each modifier group needs a unique name');
+    if (!name || name.length > 60 || name.toLowerCase() === OPEN_EXTRA_GROUP.toLowerCase() || names.has(name.toLowerCase())) throw new Error('Each modifier group needs a unique name');
     names.add(name.toLowerCase());
     if (!Array.isArray(candidate.choices) || !candidate.choices.length || candidate.choices.length > 50) throw new Error(`${name} needs between 1 and 50 choices`);
     const choiceNames = new Set<string>();
@@ -27,7 +45,8 @@ export function normalizeModifierGroups(value: unknown): ModifierGroup[] {
 
 export function priceModifierSelections(groupsInput: unknown, selectedOptions?: string) {
   const groups = normalizeModifierGroups(groupsInput);
-  const selections = selectedOptions ? selectedOptions.split(',').map(value => value.trim()).filter(Boolean) : [];
+  const openExtras = parseOpenExtras(selectedOptions);
+  const selections = selectedOptions ? selectedOptions.split(',').map(value => value.trim()).filter(value => value && !value.startsWith(`${OPEN_EXTRA_GROUP}:`)) : [];
   const byGroup = new Map<string, string[]>();
   for (const selection of selections) {
     const separator = selection.indexOf(':');
@@ -49,7 +68,7 @@ export function priceModifierSelections(groupsInput: unknown, selectedOptions?: 
     byGroup.delete(group.name);
   }
   if (byGroup.size) throw new Error(`Unknown modifier group: ${byGroup.keys().next().value}`);
-  return total;
+  return total + openExtras.reduce((sum, extra) => sum + extra.price, 0);
 }
 
 export function clampInteger(value: number, minimum: number, maximum: number) {

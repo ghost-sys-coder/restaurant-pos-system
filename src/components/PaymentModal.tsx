@@ -37,8 +37,15 @@ export default function PaymentModal() {
   const [paymentKey, setPaymentKey] = useState(() => crypto.randomUUID());
 
   useEffect(() => {
-    if (paymentModalOpen) { setPaymentKey(crypto.randomUUID()); setPaymentError(''); setPaymentSuccess(false); }
-  }, [paymentModalOpen, checkoutOrder?.id]);
+    if (paymentModalOpen) {
+      const alreadyPaid = checkoutOrder?.payments?.filter(payment => payment.status === 'success').reduce((sum, payment) => sum + payment.amount, 0) || 0;
+      const outstanding = checkoutOrder ? Math.max(0, checkoutOrder.total - alreadyPaid) : total;
+      setPaymentKey(crypto.randomUUID());
+      setPaymentError('');
+      setPaymentSuccess(false);
+      setCashTendered(outstanding);
+    }
+  }, [paymentModalOpen, checkoutOrder?.id, total]);
 
   if (!paymentModalOpen) return null;
 

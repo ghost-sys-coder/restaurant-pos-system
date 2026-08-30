@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateOrderTotals, canTransitionItem, canTransitionOrder, canTransitionTable, normalizeCurrency, normalizeModifierGroups, paymentState, priceModifierSelections, splitAmounts } from './posRules.ts';
+import { calculateOrderTotals, canTransitionItem, canTransitionOrder, canTransitionTable, formatOpenExtraSelection, normalizeCurrency, normalizeModifierGroups, parseOpenExtras, paymentState, priceModifierSelections, splitAmounts } from './posRules.ts';
 
 test('server totals ignore client totals and calculate discount then tax', () => {
   assert.deepEqual(calculateOrderTotals([{ price: 10_000, quantity: 2 }], 10, 1800), { subtotal: 20_000, discount: 2_000, tax: 3_240, total: 21_240 });
@@ -49,4 +49,13 @@ test('modifier selections enforce limits and use server prices', () => {
 test('modifier definitions reject duplicate groups and choices', () => {
   assert.throws(() => normalizeModifierGroups([{ name: 'Size', choices: [{ name: 'Large', price: 0 }, { name: 'Large', price: 1 }] }]), /invalid or duplicate/);
   assert.throws(() => normalizeModifierGroups([{ name: 'Size', choices: [{ name: 'Large', price: 0 }] }, { name: 'size', choices: [{ name: 'Small', price: 0 }] }]), /unique name/);
+});
+
+test('open modifiers use a validated reserved format and contribute to server pricing', () => {
+  const selection = formatOpenExtraSelection({ name: 'Extra avocado', price: 2_500 });
+  assert.equal(selection, 'Open extra: Extra avocado [UGX 2500]');
+  assert.deepEqual(parseOpenExtras(selection), [{ name: 'Extra avocado', price: 2_500 }]);
+  assert.equal(priceModifierSelections([], selection), 2_500);
+  assert.throws(() => parseOpenExtras('Open extra: avocado [UGX -50]'), /invalid format/);
+  assert.throws(() => normalizeModifierGroups([{ name: 'Open extra', choices: [{ name: 'Anything', price: 0 }] }]), /unique name/);
 });

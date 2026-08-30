@@ -468,9 +468,9 @@ export function PosProvider({ children }: { children: ReactNode }) {
     setIsSubmitting(true);
     try {
       const provider = method === 'cash' ? 'cash' : method;
-      const res = await fetch('/api/payment-intents', {
+      const send = (approvalToken?: string) => fetch('/api/payment-intents', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(approvalToken ? { 'x-manager-approval': approvalToken } : {}) },
         body: JSON.stringify({
           orderId,
           amount: amount + tipAmount,
@@ -479,6 +479,13 @@ export function PosProvider({ children }: { children: ReactNode }) {
           idempotencyKey,
         }),
       });
+      let res = await send();
+      if (res.status === 428) {
+        const required = await res.json().catch(() => ({}));
+        const token = await requestManagerApproval(required.action || 'payment.process', required.entityId || String(orderId), required.error || 'Manager approval required');
+        if (!token) return null;
+        res = await send(token);
+      }
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Payment processing failed' }));
         throw new Error(errorData.error || 'Payment processing failed');

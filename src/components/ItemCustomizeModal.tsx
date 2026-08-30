@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext.tsx';
 import { MenuOptionGroup, OptionChoice } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
 import { X, Plus, Minus, Check, AlertCircle } from 'lucide-react';
+import { formatOpenExtraSelection, type OpenExtra } from '../domain/posRules.ts';
 
 export default function ItemCustomizeModal() {
   const { activeCustomizingItem, setActiveCustomizingItem, addToCart } = usePos();
@@ -10,6 +11,7 @@ export default function ItemCustomizeModal() {
   const [cookingNotes, setCookingNotes] = useState<string>('');
   const [quantity, setQuantity] = useState<number>(1);
   const [selectionError, setSelectionError] = useState('');
+  const [openExtras, setOpenExtras] = useState<OpenExtra[]>([]);
 
   if (!activeCustomizingItem) return null;
 
@@ -27,7 +29,8 @@ export default function ItemCustomizeModal() {
     (sum, c) => sum + (c?.price || 0),
     0
   );
-  const finalUnitPrice = activeCustomizingItem.price + addOnsTotal;
+  const openExtrasTotal = openExtras.reduce((sum, extra) => sum + (extra.price || 0), 0);
+  const finalUnitPrice = activeCustomizingItem.price + addOnsTotal + openExtrasTotal;
 
   const handleSelectChoice = (group: MenuOptionGroup, choice: OptionChoice) => {
     setSelectionError('');
@@ -43,9 +46,13 @@ export default function ItemCustomizeModal() {
   const handleConfirm = () => {
     const invalid = optionGroups.find(group => (selectedChoices[group.name] || []).length < (group.minSelections ?? 0));
     if (invalid) { setSelectionError(`Choose at least ${invalid.minSelections ?? 1} option${(invalid.minSelections ?? 1) === 1 ? '' : 's'} for “${invalid.name}”.`); return; }
-    const optionsSummary = Object.entries(selectedChoices)
+    const predefinedSummary = Object.entries(selectedChoices)
       .flatMap(([group, choices]) => choices.map(choice => `${group}: ${choice.name}`))
       .join(', ');
+    let openExtrasSummary = '';
+    try { openExtrasSummary = openExtras.map(formatOpenExtraSelection).join(', '); }
+    catch (error: any) { setSelectionError(error?.message || 'Check the unlisted extras'); return; }
+    const optionsSummary = [predefinedSummary, openExtrasSummary].filter(Boolean).join(', ');
 
     addToCart(
       {
@@ -62,6 +69,7 @@ export default function ItemCustomizeModal() {
     setCookingNotes('');
     setQuantity(1);
     setSelectionError('');
+    setOpenExtras([]);
   };
 
   const close = () => {
@@ -70,6 +78,7 @@ export default function ItemCustomizeModal() {
     setCookingNotes('');
     setQuantity(1);
     setSelectionError('');
+    setOpenExtras([]);
   };
 
   return (
@@ -156,6 +165,7 @@ export default function ItemCustomizeModal() {
               className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 shadow-2xs"
             />
           </div>
+          <section className="rounded-xl border border-slate-200 bg-slate-50/70 p-3"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold text-slate-800">Unlisted extras</p><p className="mt-1 text-[11px] leading-5 text-slate-500">Add an unusual request that was not configured with this meal. A positive fee requires manager approval; a zero fee does not.</p></div><button type="button" onClick={() => setOpenExtras(current => [...current, { name: '', price: 0 }])} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] font-bold text-indigo-700 hover:bg-indigo-50"><Plus className="size-3.5" />Add extra</button></div>{openExtras.length > 0 && <div className="mt-3 space-y-2">{openExtras.map((extra, index) => <div key={index} className="grid gap-2 rounded-lg border border-slate-200 bg-white p-2 sm:grid-cols-[minmax(0,1fr)_130px_32px]"><input aria-label={`Unlisted extra ${index + 1} name`} value={extra.name} maxLength={60} placeholder="e.g. Extra avocado" onChange={event => setOpenExtras(current => current.map((value, extraIndex) => extraIndex === index ? { ...value, name: event.target.value } : value))} className="h-10 rounded-lg border border-slate-200 px-3 text-xs outline-none focus:border-indigo-500" /><div className="relative"><input aria-label={`Unlisted extra ${index + 1} fee`} type="number" min="0" max="10000000" step="500" value={extra.price} onChange={event => setOpenExtras(current => current.map((value, extraIndex) => extraIndex === index ? { ...value, price: Math.max(0, Math.round(Number(event.target.value) || 0)) } : value))} className="h-10 w-full rounded-lg border border-slate-200 px-3 pr-10 text-xs outline-none focus:border-indigo-500" /><span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-[9px] font-bold text-slate-400">UGX</span></div><button type="button" aria-label="Remove unlisted extra" onClick={() => setOpenExtras(current => current.filter((_, extraIndex) => extraIndex !== index))} className="grid size-8 place-items-center self-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600"><X className="size-3.5" /></button></div>)}</div>}</section>
           {selectionError && <div role="alert" className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800"><AlertCircle className="mt-0.5 size-4 shrink-0" />{selectionError}</div>}
         </div>
 

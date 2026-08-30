@@ -39,7 +39,7 @@ import { apiDiagnostics } from './httpDiagnostics.ts';
 import { ClerkAccessEvent, publicClerkName } from '../auth/clerkWebhook.ts';
 import { membershipRemovalError } from '../auth/clientLifecycle.ts';
 import { adjustInventory, createInventoryItem, listInventory, replaceMenuItemRecipe } from '../db/inventory.ts';
-import { clampInteger } from '../domain/posRules.ts';
+import { clampInteger, parseOpenExtras } from '../domain/posRules.ts';
 import { APPROVAL_ACTIONS, consumeManagerApproval, createManagerApproval, type ApprovalAction } from '../db/approvals.ts';
 import { claimNextPrintJob, completePrintJob, createPrinterProfile, createTestPrintJob, listPrinterProfiles, listPrintJobs, retryPrintJob } from '../db/printing.ts';
 import { createPaymentIntent, getPaymentIntent, listAvailableMethods } from '../db/paymentOrchestration.ts';
@@ -835,6 +835,13 @@ app.delete('/api/tables/:id/reservation', requirePermission('tables.manage'), as
 });
 
 // Orders
+function openModifierDetails(items: unknown) {
+  if (!Array.isArray(items)) return { extras: [] as Array<{ name: string; price: number; quantity: number }>, amount: 0 };
+  const extras = items.flatMap((item: any) => parseOpenExtras(String(item?.selectedOptions || '')).map(extra => ({ ...extra, quantity: clampInteger(Number(item?.quantity || 1), 1, 99) })));
+  if (extras.length > 20) throw new Error('An order can contain at most 20 unlisted extras');
+  return { extras, amount: extras.reduce((sum, extra) => sum + extra.price * extra.quantity, 0) };
+}
+
 app.get('/api/orders', async (req: AuthRequest, res) => {
   try {
     const statusFilter = req.query.status as string | undefined;
@@ -865,9 +872,12 @@ app.get('/api/orders/:id', async (req: AuthRequest, res) => {
 app.post('/api/orders', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   try {
     if (!['dine-in', 'takeout', 'delivery', 'bar'].includes(String(req.body.orderType))) return res.status(400).json({ error: 'Invalid order type' });
+    const openModifiers = openModifierDetails(req.body.items);
+    if (openModifiers.amount > 0 && !await hasManagerApproval(req, 'order.open_modifier')) return res.status(428).json({ error: `Manager approval is required for unlisted extras totaling UGX ${openModifiers.amount.toLocaleString('en-UG')}`, code: 'APPROVAL_REQUIRED', action: 'order.open_modifier' });
     if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply') && !await hasManagerApproval(req, 'order.discount')) return res.status(428).json({ error: 'Manager approval is required to apply a discount', code: 'APPROVAL_REQUIRED', action: 'order.discount' });
     const order = await createOrder({ orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.created', entityType: 'order', entityId: String(order!.id), metadata: { total: order!.total } });
+    if (openModifiers.amount > 0) await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.open_modifier.charged', entityType: 'order', entityId: String(order!.id), metadata: { amount: openModifiers.amount, currency: 'UGX', extras: openModifiers.extras } });
     res.status(201).json(order);
   } catch (error: any) {
     console.error('Failed to create order:', error);
@@ -879,11 +889,14 @@ app.post('/api/orders', requirePermission('orders.write'), async (req: AuthReque
 app.put('/api/orders/:id', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   try {
     if (!['dine-in', 'takeout', 'delivery', 'bar'].includes(String(req.body.orderType))) return res.status(400).json({ error: 'Invalid order type' });
+    const openModifiers = openModifierDetails(req.body.items);
+    if (openModifiers.amount > 0 && !await hasManagerApproval(req, 'order.open_modifier', String(req.params.id))) return res.status(428).json({ error: `Manager approval is required for unlisted extras totaling UGX ${openModifiers.amount.toLocaleString('en-UG')}`, code: 'APPROVAL_REQUIRED', action: 'order.open_modifier', entityId: String(req.params.id) });
     if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply') && !await hasManagerApproval(req, 'order.discount', String(req.params.id))) return res.status(428).json({ error: 'Manager approval is required to apply a discount', code: 'APPROVAL_REQUIRED', action: 'order.discount', entityId: String(req.params.id) });
     const expectedVersion = Number(req.body.expectedVersion);
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) return res.status(400).json({ error: 'A valid order version is required' });
     const order = await replaceOrder({ orderId: Number(req.params.id), expectedVersion, orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.updated', entityType: 'order', entityId: String(order!.id), metadata: { version: order!.version } });
+    if (openModifiers.amount > 0) await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.open_modifier.charged', entityType: 'order', entityId: String(order!.id), metadata: { amount: openModifiers.amount, currency: 'UGX', extras: openModifiers.extras } });
     res.json(order);
   } catch (error: any) {
     const message = error?.cause?.message || error?.message || 'Order update failed';
@@ -936,9 +949,10 @@ app.patch('/api/orders/items/:id/status', requirePermission('kitchen.manage'), a
   }
 });
 
-app.post('/api/orders/:id/pay', requirePermission('payments.process'), async (req: AuthRequest, res) => {
+app.post('/api/orders/:id/pay', async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
+    if (!permissionsForRole(req.staff!.role as Role).includes('payments.process') && !await hasManagerApproval(req, 'payment.process', String(id))) return res.status(428).json({ error: 'Manager approval is required for this staff member to process payment', code: 'APPROVAL_REQUIRED', action: 'payment.process', entityId: String(id) });
     if (req.body.method !== 'cash') return res.status(409).json({ error: 'This payment method must use a configured payment adapter' });
     const result = await createPaymentIntent({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, staffId: req.staff!.id, orderId: id, provider: 'cash', amount: Number(req.body.amount), idempotencyKey: String(req.body.idempotencyKey || ''), tenderedAmount: Number(req.body.tenderedAmount) });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: result.replayed ? 'payment.intent_replayed' : 'payment.intent_created', entityType: 'payment_intent', entityId: String(result.intent.id), metadata: { amount: result.intent.amount, provider: 'cash', status: result.intent.status } });
@@ -950,20 +964,22 @@ app.post('/api/orders/:id/pay', requirePermission('payments.process'), async (re
   }
 });
 
-app.get('/api/payment-methods', requirePermission('payments.process'), async (req: AuthRequest, res) => {
+app.get('/api/payment-methods', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   const settings = await getRestaurantSettings(req.terminal!.restaurantId, req.terminal!.locationId);
   res.json({ methods: await listAvailableMethods(settings?.restaurant.currency || 'UGX') });
 });
 
-app.post('/api/payment-intents', requirePermission('payments.process'), async (req: AuthRequest, res) => {
+app.post('/api/payment-intents', async (req: AuthRequest, res) => {
   try {
-    const result = await createPaymentIntent({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, staffId: req.staff!.id, orderId: Number(req.body.orderId), provider: String(req.body.provider) as PaymentProvider, amount: Number(req.body.amount), idempotencyKey: String(req.body.idempotencyKey || ''), tenderedAmount: req.body.tenderedAmount === undefined ? undefined : Number(req.body.tenderedAmount) });
+    const orderId = Number(req.body.orderId);
+    if (!permissionsForRole(req.staff!.role as Role).includes('payments.process') && !await hasManagerApproval(req, 'payment.process', String(orderId))) return res.status(428).json({ error: 'Manager approval is required for this staff member to process payment', code: 'APPROVAL_REQUIRED', action: 'payment.process', entityId: String(orderId) });
+    const result = await createPaymentIntent({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, staffId: req.staff!.id, orderId, provider: String(req.body.provider) as PaymentProvider, amount: Number(req.body.amount), idempotencyKey: String(req.body.idempotencyKey || ''), tenderedAmount: req.body.tenderedAmount === undefined ? undefined : Number(req.body.tenderedAmount) });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: result.replayed ? 'payment.intent_replayed' : 'payment.intent_created', entityType: 'payment_intent', entityId: String(result.intent.id), metadata: { provider: result.intent.provider, amount: result.intent.amount, status: result.intent.status } });
     res.status(result.replayed ? 200 : 201).json(result);
   } catch (error: any) { const message = error?.cause?.message || error?.message || 'Unable to create payment intent'; res.status(/not found/.test(message) ? 404 : /not configured|not payable|exceeds|currency|tendered/.test(message) ? 409 : 400).json({ error: message }); }
 });
 
-app.get('/api/payment-intents/:id', requirePermission('payments.process'), async (req: AuthRequest, res) => {
+app.get('/api/payment-intents/:id', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   const intent = await getPaymentIntent(req.terminal!.restaurantId, req.terminal!.locationId, Number(req.params.id)); if (!intent) return res.status(404).json({ error: 'Payment intent not found' }); res.json(intent);
 });
 

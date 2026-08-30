@@ -4,7 +4,7 @@ import { auditEvents, managerApprovals, terminals, users } from './schema.ts';
 import { hashToken, newOpaqueToken, validatePinFormat, verifyPin } from '../auth/security.ts';
 
 const APPROVER_ROLES = new Set(['restaurant_owner', 'restaurant_admin', 'general_manager', 'shift_manager']);
-export const APPROVAL_ACTIONS = ['order.discount', 'order.cancel', 'order.item_void', 'payment.refund', 'cash.drawer_open', 'shift.exception', 'settings.sensitive'] as const;
+export const APPROVAL_ACTIONS = ['order.discount', 'order.cancel', 'order.item_void', 'order.open_modifier', 'payment.process', 'payment.refund', 'cash.drawer_open', 'shift.exception', 'settings.sensitive'] as const;
 export type ApprovalAction = typeof APPROVAL_ACTIONS[number];
 
 export async function createManagerApproval(input: { terminalId: number; requesterStaffId: number; approverStaffId: number; pin: string; action: ApprovalAction; entityId?: string; reason: string }) {
