@@ -1,7 +1,8 @@
 import { and, eq } from 'drizzle-orm';
 import { db, withTransaction } from './index.ts';
-import { locations, restaurants, terminals, users } from './schema.ts';
+import { locations, restaurants, staffSessions, terminals, users, webhookEvents } from './schema.ts';
 import type { BackOfficeRole } from '../types.ts';
+import { ClerkAccessEvent, membershipRole } from '../auth/clerkWebhook.ts';
 
 export async function createRestaurantRecord(input: { clerkOrganizationId: string; name: string; slug: string; createdByClerkUserId: string }) {
   return withTransaction(async transaction => {
@@ -68,4 +69,55 @@ export async function attachBackOfficeUser(input: { clerkUserId: string; email: 
     name: input.name,
     role: input.role,
   }).returning())[0];
+}
+
+export async function reconcileClerkAccessEvent(event: ClerkAccessEvent) {
+  return withTransaction(async transaction => {
+    const claimed = await transaction.insert(webhookEvents).values({
+      provider: 'clerk', eventId: event.eventId, eventType: event.eventType,
+    }).onConflictDoNothing().returning({ id: webhookEvents.id });
+    if (!claimed[0]) return { duplicate: true };
+
+    if (event.eventType === 'organization.updated') {
+      await transaction.update(restaurants).set({
+        ...(event.name ? { name: event.name } : {}),
+        ...(event.slug ? { slug: event.slug } : {}),
+      }).where(eq(restaurants.clerkOrganizationId, event.organizationId));
+    } else if (event.eventType === 'organization.deleted') {
+      const restaurant = (await transaction.update(restaurants).set({ status: 'suspended' }).where(eq(restaurants.clerkOrganizationId, event.organizationId)).returning({ id: restaurants.id }))[0];
+      if (restaurant) {
+        const affected = await transaction.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.restaurantId, restaurant.id)).returning({ id: users.id });
+        for (const user of affected) await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, user.id));
+      }
+    } else if (event.eventType === 'user.deleted') {
+      const affected = await transaction.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.clerkUserId, event.clerkUserId)).returning({ id: users.id });
+      for (const user of affected) await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, user.id));
+    } else {
+      const membershipEvent = event as import('../auth/clerkWebhook.ts').ClerkMembershipEvent;
+      const restaurant = (await transaction.select().from(restaurants).where(eq(restaurants.clerkOrganizationId, membershipEvent.organizationId)).limit(1))[0];
+      if (restaurant) {
+        const existing = (await transaction.select().from(users).where(and(eq(users.clerkUserId, membershipEvent.clerkUserId), eq(users.restaurantId, restaurant.id))).limit(1))[0];
+        const role = membershipRole(membershipEvent);
+        if (membershipEvent.eventType === 'organizationMembership.deleted' || !role) {
+          if (existing) {
+            await transaction.update(users).set({ isActive: false, updatedAt: new Date() }).where(eq(users.id, existing.id));
+            await transaction.update(staffSessions).set({ revokedAt: new Date() }).where(eq(staffSessions.staffId, existing.id));
+          }
+        } else if (restaurant.status === 'active') {
+          const location = (await transaction.select().from(locations).where(eq(locations.restaurantId, restaurant.id)).limit(1))[0];
+          if (!location) throw new Error('Restaurant has no location for Clerk membership synchronization');
+          await transaction.insert(users).values({
+            restaurantId: restaurant.id, locationId: location.id, clerkUserId: membershipEvent.clerkUserId,
+            email: membershipEvent.email || null, name: membershipEvent.name || membershipEvent.email || 'Back-office user', role, isActive: true,
+          }).onConflictDoUpdate({
+            target: [users.clerkUserId, users.restaurantId],
+            set: { locationId: location.id, email: membershipEvent.email || null, name: membershipEvent.name || membershipEvent.email || 'Back-office user', role, isActive: true, updatedAt: new Date() },
+          });
+        }
+      }
+    }
+
+    await transaction.update(webhookEvents).set({ status: 'processed', processedAt: new Date() }).where(eq(webhookEvents.id, claimed[0].id));
+    return { duplicate: false };
+  });
 }

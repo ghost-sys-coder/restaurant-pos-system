@@ -25,13 +25,15 @@ import {
 import { getAllUsers, getUserById, permanentlyDeleteUser, setUserActive, updateUserRole } from '../db/users.ts';
 import { AuthRequest, attachClerkAuth, getPlatformRole, permissionsForRole, requirePermission, requirePlatformRole, requireStaffSession, requireStrictAuth, requireTerminal } from '../middleware/auth.ts';
 import { clerkMiddleware, clerkClient, getAuth } from '@clerk/express';
+import { verifyWebhook } from '@clerk/express/webhooks';
 import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, listLocationTerminals, listTerminalStaff, recoverRestaurantOwnerPin, revokeStaffSession, revokeTerminal, setStaffPin, writeAudit } from '../db/access.ts';
 import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE, validatePinFormat } from '../auth/security.ts';
 import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
-import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, getRestaurantSettings, listRestaurantClients, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
+import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, getRestaurantSettings, listRestaurantClients, reconcileClerkAccessEvent, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
 import { deleteMenuImage, uploadMenuImage } from '../lib/cloudinary.ts';
 import { apiDiagnostics } from './httpDiagnostics.ts';
+import { ClerkAccessEvent, publicClerkName } from '../auth/clerkWebhook.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -111,6 +113,43 @@ async function getOrCreateUserFromRequest(req: AuthRequest) {
   const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || clerkUser.username || email;
   return attachBackOfficeUser({ clerkUserId: userId, email, name, orgId, role: appRole });
 }
+
+app.post('/api/webhooks/clerk', express.raw({ type: 'application/json' }), async (req, res) => {
+  let event: Awaited<ReturnType<typeof verifyWebhook>>;
+  try {
+    event = await verifyWebhook(req);
+  } catch {
+    return res.status(400).json({ error: 'Webhook signature verification failed', code: 'WEBHOOK_VERIFICATION_FAILED' });
+  }
+
+  try {
+    let accessEvent: ClerkAccessEvent | null = null;
+    const eventId = req.get('svix-id');
+    if (!eventId) return res.status(400).json({ error: 'Webhook event ID is missing', code: 'WEBHOOK_EVENT_ID_MISSING' });
+    if (event.type === 'organizationMembership.created' || event.type === 'organizationMembership.updated' || event.type === 'organizationMembership.deleted') {
+      accessEvent = {
+        eventId,
+        eventType: event.type,
+        organizationId: event.data.organization.id,
+        clerkUserId: event.data.public_user_data.user_id,
+        clerkRole: event.data.role,
+        email: event.data.public_user_data.identifier,
+        name: publicClerkName(event.data.public_user_data),
+      };
+    } else if (event.type === 'organization.updated') {
+      accessEvent = { eventId, eventType: event.type, organizationId: event.data.id, name: event.data.name, slug: event.data.slug };
+    } else if (event.type === 'organization.deleted') {
+      accessEvent = { eventId, eventType: event.type, organizationId: event.data.id };
+    } else if (event.type === 'user.deleted' && event.data.id) {
+      accessEvent = { eventId, eventType: event.type, clerkUserId: event.data.id };
+    }
+    if (accessEvent) await reconcileClerkAccessEvent(accessEvent);
+    return res.json({ received: true });
+  } catch (error) {
+    console.error('Clerk webhook reconciliation failed', error);
+    return res.status(500).json({ error: 'Webhook reconciliation failed', code: 'WEBHOOK_RECONCILIATION_FAILED' });
+  }
+});
 
 app.use(express.json());
 

@@ -95,6 +95,18 @@ export const auditEvents = pgTable('audit_events', {
   index('audit_events_restaurant_created_idx').on(table.restaurantId, table.createdAt),
 ]);
 
+export const webhookEvents = pgTable('webhook_events', {
+  id: serial('id').primaryKey(),
+  provider: text('provider').notNull(),
+  eventId: text('event_id').notNull(),
+  eventType: text('event_type').notNull(),
+  status: text('status').default('processing').notNull(),
+  receivedAt: timestamp('received_at').defaultNow().notNull(),
+  processedAt: timestamp('processed_at'),
+}, (table) => [
+  uniqueIndex('webhook_events_provider_event_unique').on(table.provider, table.eventId),
+]);
+
 // Categories
 export const categories = pgTable('categories', {
   id: serial('id').primaryKey(),

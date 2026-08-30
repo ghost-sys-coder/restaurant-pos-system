@@ -38,7 +38,8 @@ __export(schema_exports, {
   restaurants: () => restaurants,
   staffSessions: () => staffSessions,
   terminals: () => terminals,
-  users: () => users
+  users: () => users,
+  webhookEvents: () => webhookEvents
 });
 import { relations } from "drizzle-orm";
 import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
@@ -128,6 +129,17 @@ var auditEvents = pgTable("audit_events", {
   createdAt: timestamp("created_at").defaultNow().notNull()
 }, (table) => [
   index("audit_events_restaurant_created_idx").on(table.restaurantId, table.createdAt)
+]);
+var webhookEvents = pgTable("webhook_events", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull(),
+  eventId: text("event_id").notNull(),
+  eventType: text("event_type").notNull(),
+  status: text("status").default("processing").notNull(),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+  processedAt: timestamp("processed_at")
+}, (table) => [
+  uniqueIndex("webhook_events_provider_event_unique").on(table.provider, table.eventId)
 ]);
 var categories = pgTable("categories", {
   id: serial("id").primaryKey(),
@@ -1059,6 +1071,7 @@ function permissionsForRole(role) {
 
 // src/server/app.ts
 import { clerkMiddleware, clerkClient as clerkClient2, getAuth as getAuth2 } from "@clerk/express";
+import { verifyWebhook } from "@clerk/express/webhooks";
 
 // src/types.ts
 var BACK_OFFICE_ROLES = ["restaurant_owner", "restaurant_admin", "general_manager", "accountant"];
@@ -1082,6 +1095,17 @@ function appRoleForClerkRole(role) {
 
 // src/db/organizations.ts
 import { and as and4, eq as eq4 } from "drizzle-orm";
+
+// src/auth/clerkWebhook.ts
+function membershipRole(event) {
+  if (event.eventType === "organizationMembership.deleted") return null;
+  return appRoleForClerkRole(event.clerkRole);
+}
+function publicClerkName(data) {
+  return [data.first_name, data.last_name].filter(Boolean).join(" ").trim() || data.identifier || "Back-office user";
+}
+
+// src/db/organizations.ts
 async function createRestaurantRecord(input) {
   return withTransaction(async (transaction) => {
     const restaurant = (await transaction.insert(restaurants).values({ ...input, status: "active", receiptName: input.name }).returning())[0];
@@ -1140,6 +1164,61 @@ async function attachBackOfficeUser(input) {
     name: input.name,
     role: input.role
   }).returning())[0];
+}
+async function reconcileClerkAccessEvent(event) {
+  return withTransaction(async (transaction) => {
+    const claimed = await transaction.insert(webhookEvents).values({
+      provider: "clerk",
+      eventId: event.eventId,
+      eventType: event.eventType
+    }).onConflictDoNothing().returning({ id: webhookEvents.id });
+    if (!claimed[0]) return { duplicate: true };
+    if (event.eventType === "organization.updated") {
+      await transaction.update(restaurants).set({
+        ...event.name ? { name: event.name } : {},
+        ...event.slug ? { slug: event.slug } : {}
+      }).where(eq4(restaurants.clerkOrganizationId, event.organizationId));
+    } else if (event.eventType === "organization.deleted") {
+      const restaurant = (await transaction.update(restaurants).set({ status: "suspended" }).where(eq4(restaurants.clerkOrganizationId, event.organizationId)).returning({ id: restaurants.id }))[0];
+      if (restaurant) {
+        const affected = await transaction.update(users).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where(eq4(users.restaurantId, restaurant.id)).returning({ id: users.id });
+        for (const user of affected) await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq4(staffSessions.staffId, user.id));
+      }
+    } else if (event.eventType === "user.deleted") {
+      const affected = await transaction.update(users).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where(eq4(users.clerkUserId, event.clerkUserId)).returning({ id: users.id });
+      for (const user of affected) await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq4(staffSessions.staffId, user.id));
+    } else {
+      const membershipEvent = event;
+      const restaurant = (await transaction.select().from(restaurants).where(eq4(restaurants.clerkOrganizationId, membershipEvent.organizationId)).limit(1))[0];
+      if (restaurant) {
+        const existing = (await transaction.select().from(users).where(and4(eq4(users.clerkUserId, membershipEvent.clerkUserId), eq4(users.restaurantId, restaurant.id))).limit(1))[0];
+        const role = membershipRole(membershipEvent);
+        if (membershipEvent.eventType === "organizationMembership.deleted" || !role) {
+          if (existing) {
+            await transaction.update(users).set({ isActive: false, updatedAt: /* @__PURE__ */ new Date() }).where(eq4(users.id, existing.id));
+            await transaction.update(staffSessions).set({ revokedAt: /* @__PURE__ */ new Date() }).where(eq4(staffSessions.staffId, existing.id));
+          }
+        } else if (restaurant.status === "active") {
+          const location = (await transaction.select().from(locations).where(eq4(locations.restaurantId, restaurant.id)).limit(1))[0];
+          if (!location) throw new Error("Restaurant has no location for Clerk membership synchronization");
+          await transaction.insert(users).values({
+            restaurantId: restaurant.id,
+            locationId: location.id,
+            clerkUserId: membershipEvent.clerkUserId,
+            email: membershipEvent.email || null,
+            name: membershipEvent.name || membershipEvent.email || "Back-office user",
+            role,
+            isActive: true
+          }).onConflictDoUpdate({
+            target: [users.clerkUserId, users.restaurantId],
+            set: { locationId: location.id, email: membershipEvent.email || null, name: membershipEvent.name || membershipEvent.email || "Back-office user", role, isActive: true, updatedAt: /* @__PURE__ */ new Date() }
+          });
+        }
+      }
+    }
+    await transaction.update(webhookEvents).set({ status: "processed", processedAt: /* @__PURE__ */ new Date() }).where(eq4(webhookEvents.id, claimed[0].id));
+    return { duplicate: false };
+  });
 }
 
 // src/lib/cloudinary.ts
@@ -1305,6 +1384,41 @@ async function getOrCreateUserFromRequest(req) {
   const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ") || clerkUser.username || email;
   return attachBackOfficeUser({ clerkUserId: userId, email, name, orgId, role: appRole });
 }
+app.post("/api/webhooks/clerk", express.raw({ type: "application/json" }), async (req, res) => {
+  let event;
+  try {
+    event = await verifyWebhook(req);
+  } catch {
+    return res.status(400).json({ error: "Webhook signature verification failed", code: "WEBHOOK_VERIFICATION_FAILED" });
+  }
+  try {
+    let accessEvent = null;
+    const eventId = req.get("svix-id");
+    if (!eventId) return res.status(400).json({ error: "Webhook event ID is missing", code: "WEBHOOK_EVENT_ID_MISSING" });
+    if (event.type === "organizationMembership.created" || event.type === "organizationMembership.updated" || event.type === "organizationMembership.deleted") {
+      accessEvent = {
+        eventId,
+        eventType: event.type,
+        organizationId: event.data.organization.id,
+        clerkUserId: event.data.public_user_data.user_id,
+        clerkRole: event.data.role,
+        email: event.data.public_user_data.identifier,
+        name: publicClerkName(event.data.public_user_data)
+      };
+    } else if (event.type === "organization.updated") {
+      accessEvent = { eventId, eventType: event.type, organizationId: event.data.id, name: event.data.name, slug: event.data.slug };
+    } else if (event.type === "organization.deleted") {
+      accessEvent = { eventId, eventType: event.type, organizationId: event.data.id };
+    } else if (event.type === "user.deleted" && event.data.id) {
+      accessEvent = { eventId, eventType: event.type, clerkUserId: event.data.id };
+    }
+    if (accessEvent) await reconcileClerkAccessEvent(accessEvent);
+    return res.json({ received: true });
+  } catch (error) {
+    console.error("Clerk webhook reconciliation failed", error);
+    return res.status(500).json({ error: "Webhook reconciliation failed", code: "WEBHOOK_RECONCILIATION_FAILED" });
+  }
+});
 app.use(express.json());
 if (clerkPublishableKey && clerkSecretKey) {
   app.use(clerkMiddleware({ publishableKey: clerkPublishableKey, secretKey: clerkSecretKey }));
