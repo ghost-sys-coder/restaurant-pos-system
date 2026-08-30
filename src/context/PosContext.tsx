@@ -21,6 +21,7 @@ export interface OrderConflict {
   actualVersion: number;
   latestOrder: Order;
 }
+export interface ManagerApprovalPrompt { action: string; entityId?: string; message: string; resolve: (token: string | null) => void }
 
 interface PosContextType {
   activeView: ActiveView;
@@ -96,12 +97,18 @@ interface PosContextType {
   isSubmitting: boolean;
   toastMessage: string | null;
   showToast: (msg: string) => void;
+  approvalPrompt: ManagerApprovalPrompt | null;
+  requestManagerApproval: (action: string, entityId: string | undefined, message: string) => Promise<string | null>;
+  closeManagerApproval: (token: string | null) => void;
 }
 
 const PosContext = createContext<PosContextType | undefined>(undefined);
 
 export function PosProvider({ children }: { children: ReactNode }) {
   const { currentUser, terminal } = useAuth();
+  const [approvalPrompt, setApprovalPrompt] = useState<ManagerApprovalPrompt | null>(null);
+  const requestManagerApproval = (action: string, entityId: string | undefined, message: string) => new Promise<string | null>(resolve => setApprovalPrompt({ action, entityId, message, resolve }));
+  const closeManagerApproval = (token: string | null) => { setApprovalPrompt(current => { current?.resolve(token); return null; }); };
   const [activeView, setActiveView] = useState<ActiveView>(currentUser?.role === 'kitchen' ? 'kds' : currentUser?.role === 'accountant' ? 'reports' : 'register');
   const [categories, setCategories] = useState<Category[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -310,9 +317,9 @@ export function PosProvider({ children }: { children: ReactNode }) {
     if (cartItems.length === 0) return null;
     setIsSubmitting(true);
     try {
-      const res = await fetch(editingOrder ? `/api/orders/${editingOrder.id}` : '/api/orders', {
+      const send = (approvalToken?: string) => fetch(editingOrder ? `/api/orders/${editingOrder.id}` : '/api/orders', {
         method: editingOrder ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(approvalToken ? { 'x-manager-approval': approvalToken } : {}) },
         body: JSON.stringify({
           orderType,
           tableId: orderType === 'dine-in' ? selectedTableId : null,
@@ -332,6 +339,13 @@ export function PosProvider({ children }: { children: ReactNode }) {
           })),
         }),
       });
+      let res = await send();
+      if (res.status === 428) {
+        const required = await res.json().catch(() => ({}));
+        const token = await requestManagerApproval(required.action || 'order.discount', required.entityId, required.error || 'Manager approval required');
+        if (!token) return null;
+        res = await send(token);
+      }
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Order creation failed' }));
@@ -371,11 +385,18 @@ export function PosProvider({ children }: { children: ReactNode }) {
 
   const updateOrderStatus = async (orderId: number, status: string) => {
     try {
-      const res = await fetch(`/api/orders/${orderId}/status`, {
+      const send = (approvalToken?: string) => fetch(`/api/orders/${orderId}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(approvalToken ? { 'x-manager-approval': approvalToken } : {}) },
         body: JSON.stringify({ status }),
       });
+      let res = await send();
+      if (res.status === 428) {
+        const required = await res.json().catch(() => ({}));
+        const token = await requestManagerApproval(required.action || 'order.cancel', required.entityId || String(orderId), required.error || 'Manager approval required');
+        if (!token) return;
+        res = await send(token);
+      }
       if (res.ok) {
         showToast(`Order status updated to ${status}`);
         await fetchData();
@@ -510,6 +531,9 @@ export function PosProvider({ children }: { children: ReactNode }) {
         isSubmitting,
         toastMessage,
         showToast,
+        approvalPrompt,
+        requestManagerApproval,
+        closeManagerApproval,
       }}
     >
       {children}

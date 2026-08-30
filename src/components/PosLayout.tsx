@@ -12,6 +12,7 @@ import ReceiptModal from './ReceiptModal.tsx';
 import NotificationToast from './NotificationToast.tsx';
 import SettingsView from './SettingsView.tsx';
 import InventoryView from './InventoryView.tsx';
+import ManagerApprovalModal from './ManagerApprovalModal.tsx';
 
 export default function PosLayout() {
   const { activeView, isLoading } = usePos();
@@ -47,6 +48,7 @@ export default function PosLayout() {
       <PaymentModal />
       <ReceiptModal />
       <NotificationToast />
+      <ManagerApprovalModal />
     </div>
   );
 }

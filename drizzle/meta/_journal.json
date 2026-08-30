@@ -64,6 +64,13 @@
       "when": 1788059343717,
       "tag": "0008_dazzling_shard",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788059597481,
+      "tag": "0009_lumpy_magus",
+      "breakpoints": true
     }
   ]
 }

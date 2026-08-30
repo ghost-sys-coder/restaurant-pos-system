@@ -176,6 +176,22 @@ export const stockMovements = pgTable('stock_movements', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => [index('stock_movements_location_created_idx').on(table.locationId, table.createdAt)]);
 
+export const managerApprovals = pgTable('manager_approvals', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  terminalId: integer('terminal_id').references(() => terminals.id).notNull(),
+  requesterStaffId: integer('requester_staff_id').references(() => users.id).notNull(),
+  approverStaffId: integer('approver_staff_id').references(() => users.id).notNull(),
+  action: text('action').notNull(),
+  entityId: text('entity_id'),
+  reason: text('reason').notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at').notNull(),
+  consumedAt: timestamp('consumed_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [index('manager_approvals_scope_idx').on(table.locationId, table.action, table.createdAt)]);
+
 // Restaurant Tables
 export const restaurantTables = pgTable('restaurant_tables', {
   id: serial('id').primaryKey(),

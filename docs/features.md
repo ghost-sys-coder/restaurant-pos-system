@@ -73,6 +73,7 @@
 - **Client access lifecycle** tracks Clerk members and invitations, resends or revokes invitations, adds additional owners/admins, prevents removal of the final owner, and immediately revokes local staff sessions when membership is removed
 - **Explicit location context** lets owners/admins create locations and choose the location before terminal authorization; switching clears device and PIN sessions so terminals, staff, tables, orders, and kitchen data cannot leak across locations
 - **Inventory and recipes** provide location-scoped stock items, opening balances, receipts, waste/count adjustments, reorder warnings, traceable movement history, menu recipes, and idempotent depletion when kitchen items are served
+- **Manager approvals** use a manager's location-bound PIN to issue a two-minute, one-time token for a specific sensitive action and entity; discount and cancellation approvals record requester, approver, reason, terminal, and audit references
 - **Business-aligned roles** for restaurant owners, administrators, managers, accounting, service, bar, host, cashier, and kitchen teams
 - **Role-based Profiles**: Admin, Manager, Cashier, Waiter, Kitchen
 - **Demo Staff Presets** for quick terminal access

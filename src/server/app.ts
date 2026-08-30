@@ -38,6 +38,7 @@ import { ClerkAccessEvent, publicClerkName } from '../auth/clerkWebhook.ts';
 import { membershipRemovalError } from '../auth/clientLifecycle.ts';
 import { adjustInventory, createInventoryItem, listInventory, replaceMenuItemRecipe } from '../db/inventory.ts';
 import { clampInteger } from '../domain/posRules.ts';
+import { APPROVAL_ACTIONS, consumeManagerApproval, createManagerApproval, type ApprovalAction } from '../db/approvals.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -671,6 +672,21 @@ app.get('/api/inventory', requirePermission('inventory.manage'), async (req: Aut
   res.json(await listInventory(req.terminal!.restaurantId, req.terminal!.locationId));
 });
 
+app.post('/api/approvals', async (req: AuthRequest, res) => {
+  try {
+    const action = String(req.body.action) as ApprovalAction;
+    if (!APPROVAL_ACTIONS.includes(action)) return res.status(400).json({ error: 'Invalid approval action' });
+    const reason = String(req.body.reason || '').trim().slice(0, 250);
+    if (reason.length < 3) return res.status(400).json({ error: 'An approval reason is required' });
+    const result = await createManagerApproval({ terminalId: req.terminal!.id, requesterStaffId: req.staff!.id, approverStaffId: Number(req.body.approverStaffId), pin: String(req.body.pin || ''), action, entityId: req.body.entityId == null ? undefined : String(req.body.entityId), reason });
+    res.status(201).json({ token: result.rawToken, expiresAt: result.expiresAt, approver: result.approver });
+  } catch (error: any) { res.status(400).json({ error: error?.message || 'Manager approval failed' }); }
+});
+
+async function hasManagerApproval(req: AuthRequest, action: ApprovalAction, entityId?: string) {
+  return Boolean(await consumeManagerApproval({ rawToken: req.get('x-manager-approval') || undefined, terminalId: req.terminal!.id, requesterStaffId: req.staff!.id, action, entityId }));
+}
+
 app.post('/api/inventory', requirePermission('inventory.manage'), async (req: AuthRequest, res) => {
   try {
     const name = String(req.body.name || '').trim(); const unit = String(req.body.unit || '').trim().toLowerCase();
@@ -786,7 +802,7 @@ app.get('/api/orders/:id', async (req: AuthRequest, res) => {
 app.post('/api/orders', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   try {
     if (!['dine-in', 'takeout', 'delivery', 'bar'].includes(String(req.body.orderType))) return res.status(400).json({ error: 'Invalid order type' });
-    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply')) return res.status(403).json({ error: 'Manager approval is required to apply a discount' });
+    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply') && !await hasManagerApproval(req, 'order.discount')) return res.status(428).json({ error: 'Manager approval is required to apply a discount', code: 'APPROVAL_REQUIRED', action: 'order.discount' });
     const order = await createOrder({ orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'order.created', entityType: 'order', entityId: String(order!.id), metadata: { total: order!.total } });
     res.status(201).json(order);
@@ -800,7 +816,7 @@ app.post('/api/orders', requirePermission('orders.write'), async (req: AuthReque
 app.put('/api/orders/:id', requirePermission('orders.write'), async (req: AuthRequest, res) => {
   try {
     if (!['dine-in', 'takeout', 'delivery', 'bar'].includes(String(req.body.orderType))) return res.status(400).json({ error: 'Invalid order type' });
-    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply')) return res.status(403).json({ error: 'Manager approval is required to apply a discount' });
+    if (Number(req.body.discountPercent || 0) > 0 && !permissionsForRole(req.staff!.role as Role).includes('discounts.apply') && !await hasManagerApproval(req, 'order.discount', String(req.params.id))) return res.status(428).json({ error: 'Manager approval is required to apply a discount', code: 'APPROVAL_REQUIRED', action: 'order.discount', entityId: String(req.params.id) });
     const expectedVersion = Number(req.body.expectedVersion);
     if (!Number.isInteger(expectedVersion) || expectedVersion < 1) return res.status(400).json({ error: 'A valid order version is required' });
     const order = await replaceOrder({ orderId: Number(req.params.id), expectedVersion, orderType: req.body.orderType, tableId: req.body.tableId, customerName: req.body.customerName, customerPhone: req.body.customerPhone, notes: req.body.notes, guestCount: req.body.guestCount, discountPercent: req.body.discountPercent, tipAmount: req.body.tipAmount, items: req.body.items, restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, serverName: req.staff?.name || 'Staff Member', createdByStaffId: req.staff?.id });
@@ -826,8 +842,8 @@ app.patch('/api/orders/:id/status', requirePermission('orders.write'), async (re
   try {
     const id = Number(req.params.id);
     const { status } = req.body;
-    if (status === 'cancelled' && !['restaurant_owner', 'restaurant_admin', 'general_manager', 'shift_manager'].includes(String((req as AuthRequest).staff?.role))) {
-      return res.status(403).json({ error: 'Manager approval required to cancel an order' });
+    if (status === 'cancelled' && !['restaurant_owner', 'restaurant_admin', 'general_manager', 'shift_manager'].includes(String(req.staff?.role)) && !await hasManagerApproval(req, 'order.cancel', String(id))) {
+      return res.status(428).json({ error: 'Manager approval required to cancel an order', code: 'APPROVAL_REQUIRED', action: 'order.cancel', entityId: String(id) });
     }
     const order = await updateOrderStatus(req.terminal!.restaurantId, req.terminal!.locationId, id, status);
     await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: `order.${status}`, entityType: 'order', entityId: String(id) });
