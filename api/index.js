@@ -1164,10 +1164,64 @@ async function deleteMenuImage(publicId) {
   await cloudinary.uploader.destroy(publicId, { resource_type: "image", invalidate: true });
 }
 
+// src/server/httpDiagnostics.ts
+import { randomUUID } from "node:crypto";
+var STATUS_CODES = {
+  400: "BAD_REQUEST",
+  401: "UNAUTHORIZED",
+  403: "FORBIDDEN",
+  404: "NOT_FOUND",
+  409: "CONFLICT",
+  413: "PAYLOAD_TOO_LARGE",
+  422: "VALIDATION_FAILED",
+  429: "RATE_LIMITED",
+  500: "INTERNAL_ERROR",
+  502: "UPSTREAM_ERROR",
+  503: "SERVICE_UNAVAILABLE"
+};
+function errorCodeForStatus(status) {
+  return STATUS_CODES[status] || (status >= 500 ? "INTERNAL_ERROR" : "REQUEST_FAILED");
+}
+function requestIdFromHeader(value) {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return candidate && /^[A-Za-z0-9._:-]{8,128}$/.test(candidate) ? candidate : randomUUID();
+}
+function structuredErrorBody(body, status, requestId) {
+  if (status < 400 || typeof body.error !== "string") return body;
+  return {
+    ...body,
+    code: typeof body.code === "string" && body.code ? body.code : errorCodeForStatus(status),
+    requestId
+  };
+}
+function apiDiagnostics(req, res, next) {
+  if (!req.path.startsWith("/api")) return next();
+  const requestId = requestIdFromHeader(req.headers["x-request-id"]);
+  const startedAt = Date.now();
+  res.locals.requestId = requestId;
+  res.setHeader("x-request-id", requestId);
+  const sendJson = res.json.bind(res);
+  res.json = ((body) => sendJson(structuredErrorBody(body, res.statusCode, requestId)));
+  res.once("finish", () => {
+    if (res.statusCode < 400) return;
+    console.error(JSON.stringify({
+      level: res.statusCode >= 500 ? "error" : "warn",
+      event: "api_request_failed",
+      requestId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      durationMs: Date.now() - startedAt
+    }));
+  });
+  next();
+}
+
 // src/server/app.ts
 var clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 var clerkSecretKey = process.env.CLERK_SECRET_KEY;
 var app = express();
+app.use(apiDiagnostics);
 var menuImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },

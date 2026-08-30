@@ -31,11 +31,13 @@ import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../t
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
 import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, getRestaurantSettings, listRestaurantClients, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
 import { deleteMenuImage, uploadMenuImage } from '../lib/cloudinary.ts';
+import { apiDiagnostics } from './httpDiagnostics.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
 
 const app = express();
+app.use(apiDiagnostics);
 const menuImageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },

@@ -2,7 +2,7 @@
 let tokenProvider: (() => Promise<string | null>) | null = null;
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number, public code?: string) { super(message); }
+  constructor(message: string, public status: number, public code?: string, public requestId?: string) { super(message); }
 }
 
 export function setAuthTokenProvider(provider: () => Promise<string | null>) {
@@ -84,7 +84,7 @@ export async function apiJson<T>(path: string, init: RequestInit = {}, retries =
     try {
       const response = await apiFetch(path, { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers || {}) } });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new ApiError(body.error || 'Request failed', response.status, body.code);
+      if (!response.ok) throw new ApiError(body.error || 'Request failed', response.status, body.code, body.requestId || response.headers.get('x-request-id') || undefined);
       return body as T;
     } catch (error) {
       lastError = error;
