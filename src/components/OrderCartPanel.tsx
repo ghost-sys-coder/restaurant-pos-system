@@ -133,7 +133,7 @@ export default function OrderCartPanel() {
                 Table
               </label>
               <Select items={tables.map(tbl => ({ value: String(tbl.id), label: `${tbl.tableNumber} (${tbl.section} - ${tbl.status})` }))} value={selectedTableId ? String(selectedTableId) : null} onValueChange={value => setSelectedTableId(value ? Number(value) : null)}>
-                <SelectTrigger id="select-cart-table" className="h-10 w-full rounded-xl bg-white text-xs font-semibold"><SelectValue placeholder="Choose table" /></SelectTrigger>
+                <SelectTrigger id="select-cart-table" className="w-full rounded-xl bg-white px-3 text-xs font-semibold data-[size=default]:h-11"><SelectValue placeholder="Choose table" /></SelectTrigger>
                 <SelectContent>
                 {tables.map((tbl) => (
                   <SelectItem key={tbl.id} value={String(tbl.id)}>
@@ -148,7 +148,7 @@ export default function OrderCartPanel() {
               <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
                 Guests
               </label>
-              <div className="flex items-center bg-white border border-slate-200 rounded-xl px-2 py-1 justify-between">
+              <div className="flex h-11 items-center justify-between rounded-xl border border-slate-200 bg-white px-3">
                 <Users className="w-3.5 h-3.5 text-slate-400" />
                 <input
                   type="number"
@@ -156,7 +156,7 @@ export default function OrderCartPanel() {
                   max="30"
                   value={guestCount}
                   onChange={(e) => setGuestCount(Math.max(1, Number(e.target.value) || 1))}
-                  className="w-12 bg-transparent text-right text-xs font-bold text-slate-800 focus:outline-none"
+                  className="h-full w-16 bg-transparent text-right text-sm font-bold text-slate-800 focus:outline-none"
                 />
               </div>
             </div>
@@ -179,7 +179,7 @@ export default function OrderCartPanel() {
       </div>
 
       {/* Cart Items List */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-slate-200">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin scrollbar-thumb-slate-200">
         {cartItems.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400">
             <ShoppingBag className="w-12 h-12 stroke-[1.2] mb-2 opacity-30 text-indigo-500" />
@@ -196,7 +196,7 @@ export default function OrderCartPanel() {
       </div>
 
       {/* Ticket Calculations & Actions */}
-      <div className="p-4 border-t border-slate-200 bg-slate-50/80 space-y-3 shrink-0">
+      <div className="max-h-[38%] shrink-0 overflow-y-auto p-4 border-t border-slate-200 bg-slate-50/80 space-y-3 scrollbar-thin scrollbar-thumb-slate-300">
         {/* Discount & Tip Quick Presets */}
         <div className="flex items-center justify-between text-xs gap-2">
           <div className="flex items-center gap-1">

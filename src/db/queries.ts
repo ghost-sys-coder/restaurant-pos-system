@@ -355,6 +355,23 @@ export async function updateOrderStatus(restaurantId: number, locationId: number
       if (!canTransitionOrder(current.status || '', status)) throw new Error(`Order cannot move from ${current.status} to ${status}`);
       if (status === 'completed' && current.paymentStatus !== 'paid') throw new Error('An order must be fully paid before completion');
       await tx.update(orders).set({ status, completedAt: status === 'completed' || status === 'cancelled' ? new Date() : null, version: current.version + 1 }).where(eq(orders.id, orderId));
+      const targetItemStatus = status === 'preparing' || status === 'ready' || status === 'served' ? status : null;
+      if (targetItemStatus) {
+        const items = await tx.select({ id: orderItems.id, itemStatus: orderItems.itemStatus }).from(orderItems).where(eq(orderItems.orderId, orderId));
+        const progression = ['sent', 'preparing', 'ready', 'served'];
+        const targetIndex = progression.indexOf(targetItemStatus);
+        for (const item of items) {
+          if (item.itemStatus === 'void' || item.itemStatus === 'served') continue;
+          const currentIndex = progression.indexOf(item.itemStatus || 'sent');
+          if (currentIndex < 0 || currentIndex > targetIndex) continue;
+          for (let index = currentIndex + 1; index <= targetIndex; index += 1) {
+            const nextStatus = progression[index];
+            const timestamps = nextStatus === 'preparing' ? { firedAt: new Date() } : nextStatus === 'ready' ? { readyAt: new Date() } : nextStatus === 'served' ? { servedAt: new Date() } : {};
+            await tx.update(orderItems).set({ itemStatus: nextStatus, ...timestamps }).where(eq(orderItems.id, item.id));
+          }
+          if (targetItemStatus === 'served') await consumeOrderItemInventory(tx, restaurantId, locationId, item.id);
+        }
+      }
       if (current.tableId && (status === 'completed' || status === 'cancelled')) await tx.update(restaurantTables).set({ status: status === 'completed' ? 'cleaning' : 'available', currentOrderId: null }).where(and(eq(restaurantTables.id, current.tableId), eq(restaurantTables.locationId, locationId)));
     });
     return await getOrderById(restaurantId, locationId, orderId);

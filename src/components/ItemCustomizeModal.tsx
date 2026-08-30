@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import { MenuOptionGroup, OptionChoice } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
-import { X, Plus, Minus, Check } from 'lucide-react';
+import { X, Plus, Minus, Check, AlertCircle } from 'lucide-react';
 
 export default function ItemCustomizeModal() {
   const { activeCustomizingItem, setActiveCustomizingItem, addToCart } = usePos();
   const [selectedChoices, setSelectedChoices] = useState<Record<string, OptionChoice[]>>({});
   const [cookingNotes, setCookingNotes] = useState<string>('');
   const [quantity, setQuantity] = useState<number>(1);
+  const [selectionError, setSelectionError] = useState('');
 
   if (!activeCustomizingItem) return null;
 
@@ -29,6 +30,7 @@ export default function ItemCustomizeModal() {
   const finalUnitPrice = activeCustomizingItem.price + addOnsTotal;
 
   const handleSelectChoice = (group: MenuOptionGroup, choice: OptionChoice) => {
+    setSelectionError('');
     setSelectedChoices(prev => {
       const current = prev[group.name] || [];
       const selected = current.some(value => value.name === choice.name);
@@ -40,7 +42,7 @@ export default function ItemCustomizeModal() {
 
   const handleConfirm = () => {
     const invalid = optionGroups.find(group => (selectedChoices[group.name] || []).length < (group.minSelections ?? 0));
-    if (invalid) return;
+    if (invalid) { setSelectionError(`Choose at least ${invalid.minSelections ?? 1} option${(invalid.minSelections ?? 1) === 1 ? '' : 's'} for “${invalid.name}”.`); return; }
     const optionsSummary = Object.entries(selectedChoices)
       .flatMap(([group, choices]) => choices.map(choice => `${group}: ${choice.name}`))
       .join(', ');
@@ -59,6 +61,15 @@ export default function ItemCustomizeModal() {
     setSelectedChoices({});
     setCookingNotes('');
     setQuantity(1);
+    setSelectionError('');
+  };
+
+  const close = () => {
+    setActiveCustomizingItem(null);
+    setSelectedChoices({});
+    setCookingNotes('');
+    setQuantity(1);
+    setSelectionError('');
   };
 
   return (
@@ -77,7 +88,7 @@ export default function ItemCustomizeModal() {
           </div>
           <button
             id="close-customize-modal"
-            onClick={() => setActiveCustomizingItem(null)}
+            onClick={close}
             className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center transition cursor-pointer"
           >
             <X className="w-4 h-4" />
@@ -88,7 +99,9 @@ export default function ItemCustomizeModal() {
         <div className="p-5 overflow-y-auto space-y-5 flex-1 scrollbar-thin scrollbar-thumb-slate-200">
           {optionGroups.map((group) => (
             <div key={group.name} className="space-y-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-600">
+              <div className="flex items-center justify-between gap-3"><label className="text-sm font-bold text-slate-800">{group.name}</label><span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${(group.minSelections ?? 0) > 0 ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'}`}>{(group.minSelections ?? 0) > 0 ? 'Required' : 'Optional'}</span></div>
+              <p className="text-[11px] text-slate-500">{(group.maxSelections ?? 1) === 1 ? 'Choose one option.' : `Choose up to ${group.maxSelections ?? 1}.`} {(selectedChoices[group.name] || []).length > 0 && <strong className="text-indigo-600">{(selectedChoices[group.name] || []).length} selected</strong>}</p>
+              <label className="sr-only">
                 {group.name} <span className="font-normal normal-case text-slate-400">({group.minSelections ?? 0}–{group.maxSelections ?? 1})</span>
               </label>
               <div className="grid grid-cols-2 gap-2">
@@ -143,6 +156,7 @@ export default function ItemCustomizeModal() {
               className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-500 shadow-2xs"
             />
           </div>
+          {selectionError && <div role="alert" className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800"><AlertCircle className="mt-0.5 size-4 shrink-0" />{selectionError}</div>}
         </div>
 
         {/* Footer Actions */}
@@ -168,7 +182,6 @@ export default function ItemCustomizeModal() {
           <button
             id="btn-confirm-customization"
             onClick={handleConfirm}
-            disabled={optionGroups.some(group => (selectedChoices[group.name] || []).length < (group.minSelections ?? 0))}
             className="flex-1 py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-between cursor-pointer shadow-xs"
           >
             <span>Add to Order</span>

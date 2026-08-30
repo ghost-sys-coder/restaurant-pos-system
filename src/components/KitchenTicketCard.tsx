@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { usePos } from '../context/PosContext.tsx';
-import { Order, ItemStatus } from '../types.ts';
+import { Order } from '../types.ts';
 import { getElapsedMinutes } from '../utils/formatters.ts';
 import { Clock, Check, CheckCheck, AlertTriangle, Ban } from 'lucide-react';
 import { playBeep } from '../utils/sound.ts';
@@ -21,17 +21,6 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
 
   const isUrgent = elapsed >= 20;
   const isWarning = elapsed >= 10 && elapsed < 20;
-
-  const handleToggleItem = async (itemId: number, currentStatus?: ItemStatus) => {
-    playBeep(800, 0.04);
-    const nextStatus =
-      currentStatus === 'ready'
-        ? 'served'
-        : currentStatus === 'preparing'
-        ? 'ready'
-        : 'preparing';
-    await updateOrderItemStatus(itemId, nextStatus);
-  };
 
   const handleBumpOrder = async () => {
     if (isBumping || !['active', 'preparing', 'ready'].includes(order.status)) return;
@@ -114,15 +103,17 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
         )}
 
         {order.items?.map((item) => {
-          const isReady = item.itemStatus === 'ready';
-          const isPreparing = item.itemStatus === 'preparing';
+          const isVoided = item.itemStatus === 'void';
+          const isReady = !isVoided && order.status === 'ready';
+          const isPreparing = !isVoided && order.status === 'preparing';
 
           return (
             <div
               key={item.id}
-              onClick={() => item.id && handleToggleItem(item.id, item.itemStatus)}
-              className={`p-2.5 rounded-xl border transition cursor-pointer flex items-start justify-between gap-2 ${
-                isReady
+              className={`p-2.5 rounded-xl border transition flex items-start justify-between gap-2 ${
+                isVoided
+                  ? 'bg-slate-100 border-slate-200 text-slate-400 line-through opacity-70'
+                  : isReady
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-700 line-through opacity-75'
                   : isPreparing
                   ? 'bg-amber-50 border-amber-200 text-amber-900'
@@ -151,7 +142,11 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
 
               {/* Status Indicator */}
               <div className="flex shrink-0 flex-col items-end gap-1 pt-0.5">
-                {isReady ? (
+                {isVoided ? (
+                  <span className="flex items-center gap-0.5 rounded border border-slate-200 bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                    Voided
+                  </span>
+                ) : isReady ? (
                   <span className="flex items-center gap-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-200">
                     <CheckCheck className="w-3 h-3" /> Ready
                   </span>
@@ -160,9 +155,9 @@ export default function KitchenTicketCard({ order }: { order: Order }) {
                     Cooking
                   </span>
                 ) : (
-                  <span className="text-[10px] text-slate-400 font-mono">Tap when cooking</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Waiting</span>
                 )}
-                {item.id && ['sent', 'preparing'].includes(item.itemStatus || 'sent') && <button type="button" onClick={event => { event.stopPropagation(); setVoidTarget(item); }} className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-bold text-rose-600 hover:bg-rose-100"><Ban className="size-3" />Void</button>}
+                {item.id && ['sent', 'preparing'].includes(item.itemStatus || 'sent') && <button type="button" onClick={() => setVoidTarget(item)} className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-bold text-rose-600 hover:bg-rose-100"><Ban className="size-3" />Void item</button>}
               </div>
             </div>
           );

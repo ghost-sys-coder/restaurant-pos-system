@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { usePos } from '../context/PosContext.tsx';
-import { MenuItem } from '../types.ts';
+import { MenuItem, type MenuOptionGroup } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
 import { X, Check, BookOpen, Copy, ImagePlus, LoaderCircle, Trash2 } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import ModifierGroupBuilder from './ModifierGroupBuilder.tsx';
 
 export default function MenuItemEditModal({
   item,
@@ -36,8 +37,8 @@ export default function MenuItemEditModal({
   );
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [formError, setFormError] = useState('');
-  const [optionsJson, setOptionsJson] = useState(() => {
-    try { return JSON.stringify(JSON.parse(item?.optionsJson || '[]'), null, 2); } catch { return '[]'; }
+  const [modifierGroups, setModifierGroups] = useState<MenuOptionGroup[]>(() => {
+    try { const parsed = JSON.parse(item?.optionsJson || '[]'); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
   });
 
   useEffect(() => () => { if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
@@ -59,8 +60,10 @@ export default function MenuItemEditModal({
     setIsSubmitting(true); setFormError('');
     const parsedPrice = Math.round(parseFloat(priceUGX)) || 25000;
 
+    const invalidGroup = modifierGroups.find(group => !group.name.trim() || !group.choices.length || group.choices.some(choice => !choice.name.trim()));
+    if (invalidGroup) { setIsSubmitting(false); setFormError('Every customization needs a question and every choice needs a name.'); return; }
+    const optionsJson = JSON.stringify(modifierGroups.map(group => ({ ...group, name: group.name.trim(), choices: group.choices.map(choice => ({ name: choice.name.trim(), price: Math.max(0, Math.round(choice.price || 0)) })) })));
     const payload = new FormData();
-    try { JSON.parse(optionsJson); } catch { setIsSubmitting(false); setFormError('Modifier configuration must be valid JSON'); return; }
     Object.entries({ name: name.trim(), categoryId, price: parsedPrice, description: description.trim(), prepTimeMinutes, kitchenStation, calories, allergens: allergens.trim(), isAvailable, removeImage, optionsJson }).forEach(([key, value]) => payload.set(key, String(value)));
     if (imageFile) payload.set('image', imageFile);
 
@@ -92,7 +95,7 @@ export default function MenuItemEditModal({
       id="menu-item-edit-modal-overlay"
       className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
     >
-      <div className="bg-white border border-slate-200 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 text-slate-800 flex flex-col max-h-[90vh]">
+      <div className="bg-white border border-slate-200 w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 text-slate-800 flex flex-col max-h-[92vh]">
         {/* Header */}
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
           <div className="flex items-center gap-2">
@@ -238,7 +241,7 @@ export default function MenuItemEditModal({
           </div>
           <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Kitchen station</label><Select value={kitchenStation} onValueChange={value => setKitchenStation(value ?? 'main')}><SelectTrigger className="h-9 w-full rounded-xl bg-white text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="main">Main kitchen</SelectItem><SelectItem value="grill">Grill</SelectItem><SelectItem value="fryer">Fryer</SelectItem><SelectItem value="bar">Bar</SelectItem><SelectItem value="dessert">Dessert</SelectItem><SelectItem value="cold">Cold station</SelectItem></SelectContent></Select></div>
 
-          <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Modifier groups</label><textarea rows={7} value={optionsJson} onChange={event => setOptionsJson(event.target.value)} spellCheck={false} className="w-full rounded-xl border border-slate-200 bg-slate-950 px-3 py-2 font-mono text-[11px] leading-5 text-slate-100 focus:border-indigo-500 focus:outline-none" /><p className="mt-1 text-[11px] text-slate-500">JSON groups support name, minSelections, maxSelections, kitchenLabel, and choices containing name and price. Prices are checked and recalculated by the server.</p></div>
+          <ModifierGroupBuilder groups={modifierGroups} onChange={setModifierGroups} />
 
           {/* Availability Toggle */}
           <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
