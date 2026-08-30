@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import OrderCartItemRow from './OrderCartItemRow.tsx';
 import { formatCurrency } from '../utils/formatters.ts';
@@ -12,8 +13,10 @@ import {
   Users,
   Percent,
   Receipt,
+  CheckCircle2,
+  ArrowRight,
 } from 'lucide-react';
-import { OrderType } from '../types.ts';
+import { Order, OrderType } from '../types.ts';
 
 export default function OrderCartPanel() {
   const {
@@ -42,10 +45,14 @@ export default function OrderCartPanel() {
     submitOrder,
     setPaymentModalOpen,
     isSubmitting,
+    setActiveView,
   } = usePos();
+  const [sentOrder, setSentOrder] = useState<Order | null>(null);
+  const readyToSubmit = cartItems.length > 0 && (orderType !== 'dine-in' || Boolean(selectedTableId));
 
   const handleSendToKitchen = async () => {
-    await submitOrder();
+    const created = await submitOrder();
+    if (created) setSentOrder(created);
   };
 
   const handlePayNow = async () => {
@@ -265,36 +272,38 @@ export default function OrderCartPanel() {
         </div>
 
         {/* Bottom CTA Action Buttons */}
+        {cartItems.length > 0 && orderType === 'dine-in' && !selectedTableId && <p className="rounded-lg bg-amber-50 px-3 py-2 text-center text-[11px] font-semibold text-amber-700">Select a table to continue</p>}
         <div className="grid grid-cols-2 gap-2 pt-1">
           <button
             id="btn-send-to-kitchen"
-            disabled={cartItems.length === 0 || isSubmitting}
+            disabled={!readyToSubmit || isSubmitting}
             onClick={handleSendToKitchen}
             className={`py-3 px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition ${
-              cartItems.length > 0 && !isSubmitting
+              readyToSubmit && !isSubmitting
                 ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 cursor-pointer'
                 : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
             }`}
           >
             <Send className="w-3.5 h-3.5 text-indigo-600" />
-            <span>Send KDS</span>
+            <span>Send order</span>
           </button>
 
           <button
             id="btn-pay-and-settle"
-            disabled={cartItems.length === 0 || isSubmitting}
+            disabled={!readyToSubmit || isSubmitting}
             onClick={handlePayNow}
             className={`py-3 px-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition shadow-sm ${
-              cartItems.length > 0 && !isSubmitting
+              readyToSubmit && !isSubmitting
                 ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer shadow-emerald-200'
                 : 'bg-slate-200 text-slate-400 cursor-not-allowed'
             }`}
           >
             <CreditCard className="w-3.5 h-3.5" />
-            <span>Pay {formatCurrency(total)}</span>
+            <span>Checkout {formatCurrency(total)}</span>
           </button>
         </div>
       </div>
+      {sentOrder && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/60 p-4 backdrop-blur-xs"><section className="w-full max-w-sm rounded-2xl bg-white p-6 text-center shadow-2xl"><div className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-100 text-emerald-700"><CheckCircle2 className="size-6" /></div><p className="mt-4 text-xs font-bold uppercase tracking-wider text-emerald-700">Order sent</p><h2 className="mt-1 text-xl font-extrabold tracking-tight text-slate-900">{sentOrder.orderNumber}</h2><p className="mx-auto mt-2 max-w-xs text-sm leading-6 text-slate-500">The ticket is saved and visible to the kitchen. Choose the next forward action.</p><button onClick={() => { setSentOrder(null); setActiveView('orders'); }} className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3 text-sm font-bold text-white hover:bg-indigo-700">Track this order<ArrowRight className="size-4" /></button><button onClick={() => setSentOrder(null)} className="mt-2 w-full rounded-xl py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100">Start next order</button></section></div>}
     </div>
   );
 }

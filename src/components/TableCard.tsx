@@ -58,6 +58,7 @@ export default function TableCard({ table, onEdit }: { table: RestaurantTable; o
     loadOrderToCart,
     showToast,
     fetchData,
+    openOrderForPayment,
   } = usePos();
 
   const cfg = STATUS_CONFIG[table.status] || STATUS_CONFIG.available;
@@ -178,29 +179,18 @@ export default function TableCard({ table, onEdit }: { table: RestaurantTable; o
               <Receipt className="w-3 h-3" />
               <span>Order</span>
             </button>
-            <button
-              onClick={() => handleStatusChange('billing')}
-              className="py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-bold transition cursor-pointer"
-            >
-              Set Billing
-            </button>
+            <button onClick={() => activeOrder && openOrderForPayment(activeOrder)} className="py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition cursor-pointer">Checkout</button>
           </div>
         )}
 
         {table.status === 'billing' && (
-          <div className="w-full grid grid-cols-2 gap-1.5">
+          <div className="w-full">
             <button
-              onClick={handleOpenActiveOrder}
-              className="py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1 shadow-2xs"
+              onClick={() => activeOrder && openOrderForPayment(activeOrder)}
+              className="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1 shadow-2xs"
             >
               <Receipt className="w-3 h-3" />
               <span>Checkout</span>
-            </button>
-            <button
-              onClick={() => handleStatusChange('cleaning')}
-              className="py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-bold transition cursor-pointer"
-            >
-              Paid / Bus
             </button>
           </div>
         )}

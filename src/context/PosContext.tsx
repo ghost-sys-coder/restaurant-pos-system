@@ -55,6 +55,7 @@ interface PosContextType {
   loadOrderToCart: (order: Order) => void;
   checkoutOrder: Order | null;
   setCheckoutOrder: (order: Order | null) => void;
+  openOrderForPayment: (order: Order) => void;
   // Totals
   subtotal: number;
   tax: number;
@@ -407,6 +408,11 @@ export function PosProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const openOrderForPayment = (order: Order) => {
+    setCheckoutOrder(order);
+    setPaymentModalOpen(true);
+  };
+
   return (
     <PosContext.Provider
       value={{
@@ -446,6 +452,7 @@ export function PosProvider({ children }: { children: ReactNode }) {
         loadOrderToCart,
         checkoutOrder,
         setCheckoutOrder,
+        openOrderForPayment,
         subtotal,
         tax,
         discount,

@@ -10,12 +10,13 @@ import {
   ShoppingBag,
   RotateCcw,
   XCircle,
+  CreditCard,
 } from 'lucide-react';
 import { Order, OrderStatus } from '../types.ts';
 import ConfirmDialog from './ConfirmDialog.tsx';
 
 export default function OrdersListView() {
-  const { orders, setActiveReceiptOrder, setReceiptModalOpen, updateOrderStatus, loadOrderToCart } =
+  const { orders, setActiveReceiptOrder, setReceiptModalOpen, updateOrderStatus, loadOrderToCart, openOrderForPayment } =
     usePos();
   const [filter, setFilter] = useState<'all' | 'active' | 'completed' | 'cancelled'>('all');
   const [search, setSearch] = useState<string>('');
@@ -228,13 +229,14 @@ export default function OrdersListView() {
 
                         {!isPaid && !isCancelled && (
                           <>
-                            <button
+                            <button onClick={() => openOrderForPayment(order)} className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-indigo-700" title="Continue directly to payment"><CreditCard className="w-3.5 h-3.5" />Pay</button>
+                            {order.status === 'active' && <button
                               onClick={() => loadOrderToCart(order)}
                               className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition cursor-pointer"
-                              title="Re-open into POS Ticket"
+                              title="Edit order items"
                             >
                               <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
-                            </button>
+                            </button>}
                             <button
                               onClick={() => setVoidTarget(order)}
                               className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition cursor-pointer"
