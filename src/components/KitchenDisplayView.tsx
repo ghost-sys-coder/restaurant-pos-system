@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext.tsx';
 import KitchenTicketCard from './KitchenTicketCard.tsx';
 import { UtensilsCrossed, Flame, CheckCircle, Clock, Volume2 } from 'lucide-react';
 import { playKitchenChime } from '../utils/sound.ts';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function KitchenDisplayView() {
   const { orders } = usePos();
@@ -46,7 +47,7 @@ export default function KitchenDisplayView() {
 
         {/* Filter Pills & Audio Test */}
         <div className="flex flex-wrap items-center gap-2">
-          <select aria-label="Kitchen station" value={station} onChange={event => setStation(event.target.value)} className="h-8 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold"><option value="all">All stations</option>{stations.map(value => <option key={value} value={value}>{value.replaceAll('_', ' ')}</option>)}</select>
+          <Select value={station} onValueChange={value => setStation(value ?? 'all')}><SelectTrigger aria-label="Kitchen station" className="h-8 min-w-36 rounded-xl bg-white text-xs font-bold"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All stations</SelectItem>{stations.map(value => <SelectItem key={value} value={value}>{value.replaceAll('_', ' ')}</SelectItem>)}</SelectContent></Select>
           <button
             id="kds-filter-all"
             onClick={() => setFilter('all_active')}

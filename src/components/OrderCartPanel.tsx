@@ -19,6 +19,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { Order, OrderType } from '../types.ts';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function OrderCartPanel() {
   const {
@@ -131,21 +132,16 @@ export default function OrderCartPanel() {
               <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
                 Table
               </label>
-              <select
-                id="select-cart-table"
-                value={selectedTableId || ''}
-                onChange={(e) =>
-                  setSelectedTableId(e.target.value ? Number(e.target.value) : null)
-                }
-                className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-indigo-500 font-semibold"
-              >
-                <option value="">-- Choose Table --</option>
+              <Select value={selectedTableId ? String(selectedTableId) : null} onValueChange={value => setSelectedTableId(value ? Number(value) : null)}>
+                <SelectTrigger id="select-cart-table" className="h-8 w-full rounded-xl bg-white text-xs font-semibold"><SelectValue placeholder="Choose table" /></SelectTrigger>
+                <SelectContent>
                 {tables.map((tbl) => (
-                  <option key={tbl.id} value={tbl.id}>
+                  <SelectItem key={tbl.id} value={String(tbl.id)}>
                     {tbl.tableNumber} ({tbl.section} - {tbl.status})
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
+                </SelectContent>
+              </Select>
             </div>
 
             <div>

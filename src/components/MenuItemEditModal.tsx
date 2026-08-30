@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext.tsx';
 import { MenuItem } from '../types.ts';
 import { formatCurrency } from '../utils/formatters.ts';
 import { X, Check, BookOpen, Copy, ImagePlus, LoaderCircle, Trash2 } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function MenuItemEditModal({
   item,
@@ -135,19 +136,16 @@ export default function MenuItemEditModal({
               <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">
                 Category
               </label>
-              <select
-                id="select-dish-category"
-                value={categoryId}
-                onChange={(e) => setCategoryId(Number(e.target.value))}
-                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-indigo-500 shadow-2xs"
-              >
-                {!categories.length && <option value="">Create a category first</option>}
+              <Select value={categoryId ? String(categoryId) : null} disabled={!categories.length} onValueChange={value => setCategoryId(value ? Number(value) : 0)}>
+                <SelectTrigger id="select-dish-category" className="h-9 w-full rounded-xl bg-white text-xs shadow-2xs"><SelectValue placeholder={categories.length ? 'Select category' : 'Create a category first'} /></SelectTrigger>
+                <SelectContent>
                 {categories.map((cat) => (
-                  <option key={cat.id} value={cat.id}>
+                  <SelectItem key={cat.id} value={String(cat.id)}>
                     {cat.name}
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
+                </SelectContent>
+              </Select>
             </div>
 
             <div>
@@ -238,7 +236,7 @@ export default function MenuItemEditModal({
               />
             </div>
           </div>
-          <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Kitchen station</label><select value={kitchenStation} onChange={event => setKitchenStation(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs"><option value="main">Main kitchen</option><option value="grill">Grill</option><option value="fryer">Fryer</option><option value="bar">Bar</option><option value="dessert">Dessert</option><option value="cold">Cold station</option></select></div>
+          <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Kitchen station</label><Select value={kitchenStation} onValueChange={value => setKitchenStation(value ?? 'main')}><SelectTrigger className="h-9 w-full rounded-xl bg-white text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="main">Main kitchen</SelectItem><SelectItem value="grill">Grill</SelectItem><SelectItem value="fryer">Fryer</SelectItem><SelectItem value="bar">Bar</SelectItem><SelectItem value="dessert">Dessert</SelectItem><SelectItem value="cold">Cold station</SelectItem></SelectContent></Select></div>
 
           <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Modifier groups</label><textarea rows={7} value={optionsJson} onChange={event => setOptionsJson(event.target.value)} spellCheck={false} className="w-full rounded-xl border border-slate-200 bg-slate-950 px-3 py-2 font-mono text-[11px] leading-5 text-slate-100 focus:border-indigo-500 focus:outline-none" /><p className="mt-1 text-[11px] text-slate-500">JSON groups support name, minSelections, maxSelections, kitchenLabel, and choices containing name and price. Prices are checked and recalculated by the server.</p></div>
 

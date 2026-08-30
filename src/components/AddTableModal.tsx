@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import { X, Plus, LayoutGrid } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function AddTableModal() {
   const { addTableModalOpen, setAddTableModalOpen, fetchData, showToast } = usePos();
@@ -99,16 +100,15 @@ export default function AddTableModal() {
               <label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">
                 Dining Section
               </label>
-              <select
-                value={section}
-                onChange={(e) => setSection(e.target.value)}
-                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-indigo-500 shadow-2xs"
-              >
-                <option value="Main Dining">Main Dining</option>
-                <option value="Patio">Patio</option>
-                <option value="Bar">Bar</option>
-                <option value="VIP">VIP Room</option>
-              </select>
+              <Select value={section} onValueChange={value => setSection(value ?? 'Main Dining')}>
+                <SelectTrigger className="h-9 w-full rounded-xl bg-white text-xs shadow-2xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Main Dining">Main Dining</SelectItem>
+                  <SelectItem value="Patio">Patio</SelectItem>
+                  <SelectItem value="Bar">Bar</SelectItem>
+                  <SelectItem value="VIP">VIP Room</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
