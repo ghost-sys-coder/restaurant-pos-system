@@ -5,27 +5,8 @@ import { getUserByClerkOrg } from '../db/users.ts';
 import { STAFF_COOKIE, TERMINAL_COOKIE, readCookies } from '../auth/security.ts';
 import { PlatformRole, Role } from '../types.ts';
 import type { terminals, users } from '../db/schema.ts';
-
-export type Permission =
-  | 'orders.read' | 'orders.write' | 'orders.cancel'
-  | 'discounts.apply'
-  | 'payments.process' | 'payments.refund'
-  | 'tables.manage' | 'kitchen.manage'
-  | 'menu.manage' | 'inventory.manage' | 'reports.view'
-  | 'staff.manage' | 'terminals.manage';
-
-const rolePermissions: Record<Role, Permission[]> = {
-  restaurant_owner: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'inventory.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
-  restaurant_admin: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'inventory.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
-  general_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'menu.manage', 'inventory.manage', 'reports.view', 'staff.manage', 'terminals.manage'],
-  accountant: ['orders.read', 'reports.view'],
-  shift_manager: ['orders.read', 'orders.write', 'orders.cancel', 'discounts.apply', 'payments.process', 'payments.refund', 'tables.manage', 'kitchen.manage', 'inventory.manage', 'reports.view'],
-  cashier: ['orders.read', 'orders.write', 'payments.process', 'tables.manage'],
-  server: ['orders.read', 'orders.write', 'tables.manage'],
-  bartender: ['orders.read', 'orders.write', 'payments.process', 'tables.manage'],
-  host: ['orders.read', 'tables.manage'],
-  kitchen: ['orders.read', 'kitchen.manage'],
-};
+import { permissionsForRole, roleHasPermission, type Permission } from '../auth/permissions.ts';
+export type { Permission } from '../auth/permissions.ts';
 
 export interface AuthRequest extends Request {
   authUserId?: string;
@@ -108,7 +89,7 @@ export const requirePermission = (permission: Permission) => (
   next: NextFunction,
 ) => {
   const role = req.staff?.role as Role | undefined;
-  if (!role || !rolePermissions[role]?.includes(permission)) return res.status(403).json({ error: `Permission required: ${permission}` });
+  if (!roleHasPermission(role, permission)) return res.status(403).json({ error: `Permission required: ${permission}` });
   next();
 };
 
@@ -118,6 +99,4 @@ export const requireRole = (allowedRoles: Role[]) => (req: AuthRequest, res: Res
   next();
 };
 
-export function permissionsForRole(role: Role): Permission[] {
-  return rolePermissions[role] ?? [];
-}
+export { permissionsForRole };
