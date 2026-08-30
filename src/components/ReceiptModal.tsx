@@ -1,12 +1,19 @@
 import { usePos } from '../context/PosContext.tsx';
 import { formatCurrency, formatDate } from '../utils/formatters.ts';
-import { X, Printer, CheckCircle2, Flame } from 'lucide-react';
+import { X, Printer, CheckCircle2, Clock3, Flame } from 'lucide-react';
 
 export default function ReceiptModal() {
   const { receiptModalOpen, setReceiptModalOpen, activeReceiptOrder, setActiveReceiptOrder } =
     usePos();
 
   if (!receiptModalOpen || !activeReceiptOrder) return null;
+
+  const successfulPayments = activeReceiptOrder.payments?.filter(payment => payment.status === 'success') || [];
+  const paidAmount = successfulPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const balanceDue = Math.max(0, activeReceiptOrder.total - paidAmount);
+  const isFullyPaid = activeReceiptOrder.paymentStatus === 'paid' && balanceDue === 0;
+  const paymentMethods = [...new Set(successfulPayments.map(payment => payment.method))];
+  const paymentMethodLabel = paymentMethods.length > 1 ? 'SPLIT TENDERS' : paymentMethods[0]?.toUpperCase();
 
   const handlePrint = () => {
     window.print();
@@ -26,7 +33,7 @@ export default function ReceiptModal() {
         {/* Modal Top Actions */}
         <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50">
           <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-600">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            {isFullyPaid ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : <Clock3 className="w-4 h-4 text-amber-600" />}
             <span>Order Receipt</span>
           </div>
           <div className="flex items-center gap-2">
@@ -138,13 +145,29 @@ export default function ReceiptModal() {
               <span>TOTAL:</span>
               <span className="text-indigo-600">{formatCurrency(activeReceiptOrder.total)}</span>
             </div>
+            {paidAmount > 0 && (
+              <div className="flex justify-between pt-1 text-emerald-700">
+                <span>Paid:</span>
+                <span>{formatCurrency(paidAmount)}</span>
+              </div>
+            )}
+            {!isFullyPaid && (
+              <div className="flex justify-between font-bold text-amber-700">
+                <span>Balance due:</span>
+                <span>{formatCurrency(balanceDue)}</span>
+              </div>
+            )}
           </div>
 
           {/* Payment Info & Barcode */}
           <div className="text-center space-y-2 pt-1 text-[11px]">
-            <p className="font-semibold text-emerald-600">
-              PAID VIA {(activeReceiptOrder.paymentMethod || 'CARD').toUpperCase()}
-            </p>
+            {successfulPayments.length === 0 ? (
+              <p className="font-semibold text-amber-700">PAYMENT PENDING</p>
+            ) : isFullyPaid ? (
+              <p className="font-semibold text-emerald-600">PAID VIA {paymentMethodLabel}</p>
+            ) : (
+              <p className="font-semibold text-amber-700">PARTIALLY PAID VIA {paymentMethodLabel}</p>
+            )}
             <p className="text-[10px] text-slate-500">Thank you for dining with us!</p>
 
             {/* Simulated barcode */}

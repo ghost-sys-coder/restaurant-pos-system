@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePos } from '../context/PosContext.tsx';
 import { formatCurrency } from '../utils/formatters.ts';
 import { X, Users, CreditCard, Banknote, CheckCircle2 } from 'lucide-react';
@@ -21,23 +21,36 @@ export default function SplitBillModal({
   const [paidShares, setPaidShares] = useState<number[]>([]);
   const [busyShare, setBusyShare] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const [plannedTotal, setPlannedTotal] = useState(0);
+  const [plannedShares, setPlannedShares] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (!splitBillModalOpen) return;
+    const alreadyPaid = order?.payments?.filter(payment => payment.status === 'success').reduce((sum, payment) => sum + payment.amount, 0) || 0;
+    const outstanding = order ? Math.max(0, order.total - alreadyPaid) : total;
+    setPlannedTotal(outstanding);
+    setPlannedShares(outstanding > 0 ? splitAmounts(outstanding, splitCount) : Array(splitCount).fill(0));
+    setPaidShares([]);
+    setBusyShare(null);
+    setError('');
+  }, [splitBillModalOpen, order?.id]);
 
   if (!splitBillModalOpen) return null;
 
-  const alreadyPaid = order?.payments?.filter(payment => payment.status === 'success').reduce((sum, payment) => sum + payment.amount, 0) || 0;
-  const targetTotal = order ? Math.max(0, order.total - alreadyPaid) : total;
-  const shares = targetTotal > 0 ? splitAmounts(targetTotal, splitCount) : Array(splitCount).fill(0);
+  const targetTotal = plannedTotal;
+  const shares = plannedShares.length === splitCount ? plannedShares : splitAmounts(targetTotal, splitCount);
   const baseShare = Math.min(...shares);
   const shareAmount = (index: number) => shares[index];
 
   const handlePayShare = async (index: number, method: string) => {
     if (!paidShares.includes(index) && busyShare === null) {
       setBusyShare(index); setError('');
+      const amount = shareAmount(index);
       try {
-        const updated = await onPayShare(shareAmount(index), method, crypto.randomUUID());
+        const updated = await onPayShare(amount, method, crypto.randomUUID());
         if (!updated) throw new Error('Payment was not recorded');
-      setPaidShares((prev) => [...prev, index]);
-        showToast(`Guest #${index + 1} paid ${formatCurrency(shareAmount(index))} via ${method}`);
+        setPaidShares((prev) => [...prev, index]);
+        showToast(`Guest #${index + 1} paid ${formatCurrency(amount)} via ${method}`);
         if (updated.paymentStatus === 'paid') {
           setSplitBillModalOpen(false); onClose(); onComplete(updated);
         }
@@ -92,14 +105,16 @@ export default function SplitBillModal({
                 <button
                   key={num}
                   type="button"
+                  disabled={paidShares.length > 0 || busyShare !== null}
                   onClick={() => {
                     setSplitCount(num);
+                    setPlannedShares(targetTotal > 0 ? splitAmounts(targetTotal, num) : Array(num).fill(0));
                     setPaidShares([]);
                   }}
                   className={`py-2.5 rounded-xl border text-xs font-bold transition cursor-pointer flex flex-col items-center justify-center ${
                     splitCount === num
                       ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 shadow-2xs'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 shadow-2xs disabled:cursor-not-allowed disabled:opacity-50'
                   }`}
                 >
                   <span className="text-sm">{num}</span>
@@ -107,6 +122,7 @@ export default function SplitBillModal({
                 </button>
               ))}
             </div>
+            {paidShares.length > 0 && <p className="text-xs leading-5 text-slate-500">The split is locked after the first payment so every guest keeps the amount originally assigned.</p>}
           </div>
 
           {/* Per Person Amount Callout */}
