@@ -6,7 +6,7 @@ import { X, Plus, Minus, Check } from 'lucide-react';
 
 export default function ItemCustomizeModal() {
   const { activeCustomizingItem, setActiveCustomizingItem, addToCart } = usePos();
-  const [selectedChoices, setSelectedChoices] = useState<Record<string, OptionChoice>>({});
+  const [selectedChoices, setSelectedChoices] = useState<Record<string, OptionChoice[]>>({});
   const [cookingNotes, setCookingNotes] = useState<string>('');
   const [quantity, setQuantity] = useState<number>(1);
 
@@ -22,22 +22,27 @@ export default function ItemCustomizeModal() {
   }
 
   // Calculate customized unit price
-  const addOnsTotal = (Object.values(selectedChoices) as OptionChoice[]).reduce(
+  const addOnsTotal = Object.values(selectedChoices).flat().reduce(
     (sum, c) => sum + (c?.price || 0),
     0
   );
   const finalUnitPrice = activeCustomizingItem.price + addOnsTotal;
 
-  const handleSelectChoice = (groupName: string, choice: OptionChoice) => {
-    setSelectedChoices((prev) => ({
-      ...prev,
-      [groupName]: choice,
-    }));
+  const handleSelectChoice = (group: MenuOptionGroup, choice: OptionChoice) => {
+    setSelectedChoices(prev => {
+      const current = prev[group.name] || [];
+      const selected = current.some(value => value.name === choice.name);
+      const max = group.maxSelections ?? 1;
+      const next = selected ? current.filter(value => value.name !== choice.name) : max === 1 ? [choice] : current.length < max ? [...current, choice] : current;
+      return { ...prev, [group.name]: next };
+    });
   };
 
   const handleConfirm = () => {
-    const optionsSummary = (Object.entries(selectedChoices) as [string, OptionChoice][])
-      .map(([group, choice]) => `${group}: ${choice?.name || ''}`)
+    const invalid = optionGroups.find(group => (selectedChoices[group.name] || []).length < (group.minSelections ?? 0));
+    if (invalid) return;
+    const optionsSummary = Object.entries(selectedChoices)
+      .flatMap(([group, choices]) => choices.map(choice => `${group}: ${choice.name}`))
       .join(', ');
 
     addToCart(
@@ -84,16 +89,16 @@ export default function ItemCustomizeModal() {
           {optionGroups.map((group) => (
             <div key={group.name} className="space-y-2">
               <label className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                {group.name}
+                {group.name} <span className="font-normal normal-case text-slate-400">({group.minSelections ?? 0}–{group.maxSelections ?? 1})</span>
               </label>
               <div className="grid grid-cols-2 gap-2">
                 {group.choices.map((choice) => {
-                  const isSelected = selectedChoices[group.name]?.name === choice.name;
+                  const isSelected = (selectedChoices[group.name] || []).some(value => value.name === choice.name);
                   return (
                     <button
                       key={choice.name}
                       type="button"
-                      onClick={() => handleSelectChoice(group.name, choice)}
+                      onClick={() => handleSelectChoice(group, choice)}
                       className={`flex items-center justify-between p-3 rounded-xl border text-xs font-semibold transition cursor-pointer text-left ${
                         isSelected
                           ? 'bg-indigo-50/70 border-indigo-500 text-indigo-900 ring-1 ring-indigo-500'
@@ -163,7 +168,8 @@ export default function ItemCustomizeModal() {
           <button
             id="btn-confirm-customization"
             onClick={handleConfirm}
-            className="flex-1 py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-between cursor-pointer shadow-xs"
+            disabled={optionGroups.some(group => (selectedChoices[group.name] || []).length < (group.minSelections ?? 0))}
+            className="flex-1 py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-between cursor-pointer shadow-xs"
           >
             <span>Add to Order</span>
             <span className="font-extrabold font-mono text-sm">

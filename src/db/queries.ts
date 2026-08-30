@@ -1,6 +1,6 @@
 import { desc, eq, and, sql, gte, isNull } from 'drizzle-orm';
 import { db, withTransaction } from './index.ts';
-import { calculateOrderTotals, canTransitionItem, canTransitionOrder, canTransitionTable, clampInteger, normalizeCurrency, paymentState } from '../domain/posRules.ts';
+import { calculateOrderTotals, canTransitionItem, canTransitionOrder, canTransitionTable, clampInteger, normalizeCurrency, normalizeModifierGroups, paymentState, priceModifierSelections } from '../domain/posRules.ts';
 import {
   categories,
   menuItems,
@@ -68,7 +68,7 @@ export async function createMenuItem(data: {
       const category = await db.select({ id: categories.id }).from(categories).where(and(eq(categories.id, data.categoryId), eq(categories.restaurantId, data.restaurantId))).limit(1);
       if (!category[0]) throw new Error('Category not found in this restaurant');
     }
-    const res = await db.insert(menuItems).values(data).returning();
+    const res = await db.insert(menuItems).values({ ...data, optionsJson: JSON.stringify(normalizeModifierGroups(data.optionsJson)) }).returning();
     return res[0];
   } catch (error) {
     console.error('Failed to create menu item:', error);
@@ -94,7 +94,8 @@ export async function updateMenuItem(restaurantId: number, id: number, data: Par
       const category = await db.select({ id: categories.id }).from(categories).where(and(eq(categories.id, data.categoryId), eq(categories.restaurantId, restaurantId))).limit(1);
       if (!category[0]) throw new Error('Category not found in this restaurant');
     }
-    const res = await db.update(menuItems).set(data).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId))).returning();
+    const normalized = data.optionsJson === undefined ? data : { ...data, optionsJson: JSON.stringify(normalizeModifierGroups(data.optionsJson)) };
+    const res = await db.update(menuItems).set(normalized).where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId))).returning();
     return res[0];
   } catch (error) {
     console.error('Failed to update menu item:', error);
@@ -263,22 +264,7 @@ export async function createOrder(data: {
 }
 
 function selectedOptionPrice(optionsJson: string | null, selectedOptions?: string) {
-  if (!selectedOptions) return 0;
-  let groups: Array<{ name: string; choices: Array<{ name: string; price: number }> }> = [];
-  try { groups = optionsJson ? JSON.parse(optionsJson) : []; } catch { throw new Error('Menu options are invalid'); }
-  const selections = selectedOptions.split(',').map(value => value.trim()).filter(Boolean);
-  let total = 0;
-  for (const selection of selections) {
-    const separator = selection.indexOf(':');
-    if (separator < 1) throw new Error('Selected option format is invalid');
-    const groupName = selection.slice(0, separator).trim();
-    const choiceName = selection.slice(separator + 1).trim();
-    const group = groups.find(value => value.name === groupName);
-    const choice = group?.choices.find(value => value.name === choiceName);
-    if (!choice || !Number.isInteger(choice.price) || choice.price < 0) throw new Error(`Option ${selection} is unavailable`);
-    total += choice.price;
-  }
-  return total;
+  return priceModifierSelections(optionsJson, selectedOptions);
 }
 
 async function priceOrderItems(transaction: any, restaurantId: number, requested: Array<{ menuItemId: number; quantity: number; selectedOptions?: string; notes?: string }>) {

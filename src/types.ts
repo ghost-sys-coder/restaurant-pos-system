@@ -40,6 +40,9 @@ export interface OptionChoice {
 export interface MenuOptionGroup {
   name: string;
   choices: OptionChoice[];
+  minSelections?: number;
+  maxSelections?: number;
+  kitchenLabel?: string;
 }
 
 export interface MenuItem {

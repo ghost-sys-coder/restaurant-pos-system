@@ -59,7 +59,7 @@ function menuItemPayload(body: Record<string, any>) {
     categoryId, price, prepTimeMinutes, calories,
     name: String(body.name).trim().slice(0, 120),
     description: String(body.description || '').trim().slice(0, 1_000),
-    allergens: String(body.allergens || '').trim().slice(0, 500),
+    allergens: String(body.allergens || '').trim().slice(0, 500), optionsJson: String(body.optionsJson || '[]'),
     isAvailable: body.isAvailable === true || body.isAvailable === 'true',
   };
 }

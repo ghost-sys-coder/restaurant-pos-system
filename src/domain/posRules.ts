@@ -1,4 +1,56 @@
 export type PricedLine = { price: number; quantity: number };
+export type ModifierGroup = { name: string; choices: Array<{ name: string; price: number }>; minSelections: number; maxSelections: number; kitchenLabel?: string };
+
+export function normalizeModifierGroups(value: unknown): ModifierGroup[] {
+  if (value == null || value === '') return [];
+  const raw = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!Array.isArray(raw) || raw.length > 20) throw new Error('Modifier groups must be a list of at most 20 groups');
+  const names = new Set<string>();
+  return raw.map((candidate: any) => {
+    const name = String(candidate?.name || '').trim();
+    if (!name || name.length > 60 || names.has(name.toLowerCase())) throw new Error('Each modifier group needs a unique name');
+    names.add(name.toLowerCase());
+    if (!Array.isArray(candidate.choices) || !candidate.choices.length || candidate.choices.length > 50) throw new Error(`${name} needs between 1 and 50 choices`);
+    const choiceNames = new Set<string>();
+    const choices = candidate.choices.map((choice: any) => {
+      const choiceName = String(choice?.name || '').trim();
+      const price = Number(choice?.price);
+      if (!choiceName || choiceName.length > 60 || choiceNames.has(choiceName.toLowerCase()) || !Number.isInteger(price) || price < 0 || price > 1_000_000_000) throw new Error(`${name} has an invalid or duplicate choice`);
+      choiceNames.add(choiceName.toLowerCase()); return { name: choiceName, price };
+    });
+    const minSelections = clampInteger(candidate.minSelections ?? 0, 0, choices.length);
+    const maxSelections = clampInteger(candidate.maxSelections ?? 1, 1, choices.length);
+    if (minSelections > maxSelections) throw new Error(`${name} minimum selections cannot exceed its maximum`);
+    return { name, choices, minSelections, maxSelections, kitchenLabel: String(candidate.kitchenLabel || '').trim().slice(0, 60) || undefined };
+  });
+}
+
+export function priceModifierSelections(groupsInput: unknown, selectedOptions?: string) {
+  const groups = normalizeModifierGroups(groupsInput);
+  const selections = selectedOptions ? selectedOptions.split(',').map(value => value.trim()).filter(Boolean) : [];
+  const byGroup = new Map<string, string[]>();
+  for (const selection of selections) {
+    const separator = selection.indexOf(':');
+    if (separator < 1) throw new Error('Selected modifier format is invalid');
+    const groupName = selection.slice(0, separator).trim();
+    const choiceName = selection.slice(separator + 1).trim();
+    byGroup.set(groupName, [...(byGroup.get(groupName) || []), choiceName]);
+  }
+  let total = 0;
+  for (const group of groups) {
+    const selected = byGroup.get(group.name) || [];
+    if (selected.length < group.minSelections || selected.length > group.maxSelections) throw new Error(`${group.name} requires ${group.minSelections === group.maxSelections ? group.minSelections : `${group.minSelections} to ${group.maxSelections}`} selection(s)`);
+    if (new Set(selected).size !== selected.length) throw new Error(`${group.name} contains a duplicate selection`);
+    for (const choiceName of selected) {
+      const choice = group.choices.find(value => value.name === choiceName);
+      if (!choice) throw new Error(`Modifier ${group.name}: ${choiceName} is unavailable`);
+      total += choice.price;
+    }
+    byGroup.delete(group.name);
+  }
+  if (byGroup.size) throw new Error(`Unknown modifier group: ${byGroup.keys().next().value}`);
+  return total;
+}
 
 export function clampInteger(value: number, minimum: number, maximum: number) {
   if (!Number.isFinite(value)) throw new Error('A numeric value is required');

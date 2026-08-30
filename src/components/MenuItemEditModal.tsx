@@ -34,6 +34,9 @@ export default function MenuItemEditModal({
   );
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [formError, setFormError] = useState('');
+  const [optionsJson, setOptionsJson] = useState(() => {
+    try { return JSON.stringify(JSON.parse(item?.optionsJson || '[]'), null, 2); } catch { return '[]'; }
+  });
 
   useEffect(() => () => { if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
   useEffect(() => {
@@ -55,7 +58,8 @@ export default function MenuItemEditModal({
     const parsedPrice = Math.round(parseFloat(priceUGX)) || 25000;
 
     const payload = new FormData();
-    Object.entries({ name: name.trim(), categoryId, price: parsedPrice, description: description.trim(), prepTimeMinutes, calories, allergens: allergens.trim(), isAvailable, removeImage }).forEach(([key, value]) => payload.set(key, String(value)));
+    try { JSON.parse(optionsJson); } catch { setIsSubmitting(false); setFormError('Modifier configuration must be valid JSON'); return; }
+    Object.entries({ name: name.trim(), categoryId, price: parsedPrice, description: description.trim(), prepTimeMinutes, calories, allergens: allergens.trim(), isAvailable, removeImage, optionsJson }).forEach(([key, value]) => payload.set(key, String(value)));
     if (imageFile) payload.set('image', imageFile);
 
     try {
@@ -233,6 +237,8 @@ export default function MenuItemEditModal({
               />
             </div>
           </div>
+
+          <div><label className="text-xs font-bold uppercase tracking-wider text-slate-600 block mb-1">Modifier groups</label><textarea rows={7} value={optionsJson} onChange={event => setOptionsJson(event.target.value)} spellCheck={false} className="w-full rounded-xl border border-slate-200 bg-slate-950 px-3 py-2 font-mono text-[11px] leading-5 text-slate-100 focus:border-indigo-500 focus:outline-none" /><p className="mt-1 text-[11px] text-slate-500">JSON groups support name, minSelections, maxSelections, kitchenLabel, and choices containing name and price. Prices are checked and recalculated by the server.</p></div>
 
           {/* Availability Toggle */}
           <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
