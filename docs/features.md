@@ -70,6 +70,7 @@
 - **PIN-only floor staff** do not require personal email or Google accounts
 - **Clerk Organizations** isolate restaurant clients and support owner/admin invitations
 - **Platform owner console** creates client organizations and sends the first owner invitation
+- **Client access lifecycle** tracks Clerk members and invitations, resends or revokes invitations, adds additional owners/admins, prevents removal of the final owner, and immediately revokes local staff sessions when membership is removed
 - **Business-aligned roles** for restaurant owners, administrators, managers, accounting, service, bar, host, cashier, and kitchen teams
 - **Role-based Profiles**: Admin, Manager, Cashier, Waiter, Kitchen
 - **Demo Staff Presets** for quick terminal access

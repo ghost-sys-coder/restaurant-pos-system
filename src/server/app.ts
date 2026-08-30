@@ -30,10 +30,11 @@ import { authenticatePin, authorizeTerminal, createPinStaff, listAuditEvents, li
 import { clearCookie, readCookies, sessionCookie, STAFF_COOKIE, TERMINAL_COOKIE, validatePinFormat } from '../auth/security.ts';
 import { BACK_OFFICE_ROLES, BackOfficeRole, OPERATIONAL_ROLES, Role } from '../types.ts';
 import { appRoleForClerkRole, clerkRoleForAppRole } from '../auth/organizationRoles.ts';
-import { attachBackOfficeUser, createRestaurantRecord, getRestaurantByClerkOrgId, getRestaurantSettings, listRestaurantClients, reconcileClerkAccessEvent, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
+import { attachBackOfficeUser, createRestaurantRecord, deactivateBackOfficeMembership, getRestaurantByClerkOrgId, getRestaurantById, getRestaurantSettings, listRestaurantClients, reconcileClerkAccessEvent, updateRestaurantSettings, updateRestaurantStatus } from '../db/organizations.ts';
 import { deleteMenuImage, uploadMenuImage } from '../lib/cloudinary.ts';
 import { apiDiagnostics } from './httpDiagnostics.ts';
 import { ClerkAccessEvent, publicClerkName } from '../auth/clerkWebhook.ts';
+import { membershipRemovalError } from '../auth/clientLifecycle.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -215,6 +216,77 @@ app.patch('/api/platform/clients/:id/status', requireStrictAuth, requirePlatform
   const client = await updateRestaurantStatus(Number(req.params.id), status as 'active' | 'suspended');
   if (!client) return res.status(404).json({ error: 'Restaurant client not found' });
   res.json(client);
+});
+
+function publicOrganizationInvitation(invitation: any) {
+  return { id: invitation.id, emailAddress: invitation.emailAddress, role: invitation.role, roleName: invitation.roleName, status: invitation.status, createdAt: invitation.createdAt, expiresAt: invitation.expiresAt };
+}
+
+function publicOrganizationMembership(membership: any) {
+  const user = membership.publicUserData;
+  return { id: membership.id, userId: user?.userId, emailAddress: user?.identifier, name: [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.identifier || 'Member', role: membership.role, createdAt: membership.createdAt };
+}
+
+async function platformClientOrganization(clientId: number) {
+  const client = await getRestaurantById(clientId);
+  if (!client?.clerkOrganizationId) throw new Error('Restaurant client does not have a Clerk organization');
+  return client;
+}
+
+app.get('/api/platform/clients/:id/access', requireStrictAuth, requirePlatformRole(['platform_owner', 'platform_support']), async (req: AuthRequest, res) => {
+  try {
+    const client = await platformClientOrganization(Number(req.params.id));
+    const [invitations, memberships] = await Promise.all([
+      clerkClient.organizations.getOrganizationInvitationList({ organizationId: client.clerkOrganizationId!, limit: 100 }),
+      clerkClient.organizations.getOrganizationMembershipList({ organizationId: client.clerkOrganizationId!, limit: 100 }),
+    ]);
+    res.json({ invitations: invitations.data.map(publicOrganizationInvitation), members: memberships.data.map(publicOrganizationMembership) });
+  } catch (error: any) {
+    res.status(String(error?.message).includes('does not have') ? 404 : 400).json({ error: platformSetupError(error) });
+  }
+});
+
+app.post('/api/platform/clients/:id/invitations', requireStrictAuth, requirePlatformRole(['platform_owner']), async (req: AuthRequest, res) => {
+  try {
+    const client = await platformClientOrganization(Number(req.params.id));
+    const emailAddress = String(req.body.emailAddress || '').trim().toLowerCase();
+    const role = String(req.body.role || 'restaurant_owner') as BackOfficeRole;
+    if (!/^\S+@\S+\.\S+$/.test(emailAddress) || !BACK_OFFICE_ROLES.includes(role)) return res.status(400).json({ error: 'A valid email and restaurant role are required' });
+    const invitation = await clerkClient.organizations.createOrganizationInvitation({ organizationId: client.clerkOrganizationId!, inviterUserId: req.authUserId!, emailAddress, role: clerkRoleForAppRole[role], redirectUrl: invitationRedirectUrl(req) });
+    res.status(201).json(publicOrganizationInvitation(invitation));
+  } catch (error: any) { res.status(400).json({ error: platformSetupError(error) }); }
+});
+
+app.post('/api/platform/clients/:id/invitations/:invitationId/resend', requireStrictAuth, requirePlatformRole(['platform_owner']), async (req: AuthRequest, res) => {
+  try {
+    const client = await platformClientOrganization(Number(req.params.id));
+    const invitation = await clerkClient.organizations.getOrganizationInvitation({ organizationId: client.clerkOrganizationId!, invitationId: req.params.invitationId });
+    if (invitation.status === 'accepted') return res.status(409).json({ error: 'Accepted invitations cannot be resent' });
+    if (invitation.status === 'pending') await clerkClient.organizations.revokeOrganizationInvitation({ organizationId: client.clerkOrganizationId!, invitationId: invitation.id, requestingUserId: req.authUserId! });
+    const replacement = await clerkClient.organizations.createOrganizationInvitation({ organizationId: client.clerkOrganizationId!, inviterUserId: req.authUserId!, emailAddress: invitation.emailAddress, role: invitation.role, redirectUrl: invitationRedirectUrl(req) });
+    res.status(201).json(publicOrganizationInvitation(replacement));
+  } catch (error: any) { res.status(400).json({ error: platformSetupError(error) }); }
+});
+
+app.delete('/api/platform/clients/:id/invitations/:invitationId', requireStrictAuth, requirePlatformRole(['platform_owner']), async (req: AuthRequest, res) => {
+  try {
+    const client = await platformClientOrganization(Number(req.params.id));
+    const invitation = await clerkClient.organizations.revokeOrganizationInvitation({ organizationId: client.clerkOrganizationId!, invitationId: req.params.invitationId, requestingUserId: req.authUserId! });
+    res.json(publicOrganizationInvitation(invitation));
+  } catch (error: any) { res.status(400).json({ error: platformSetupError(error) }); }
+});
+
+app.delete('/api/platform/clients/:id/members/:userId', requireStrictAuth, requirePlatformRole(['platform_owner']), async (req: AuthRequest, res) => {
+  try {
+    const client = await platformClientOrganization(Number(req.params.id));
+    const memberships = await clerkClient.organizations.getOrganizationMembershipList({ organizationId: client.clerkOrganizationId!, limit: 100 });
+    const ownerRole = clerkRoleForAppRole.restaurant_owner;
+    const removalError = membershipRemovalError(memberships.data.map(membership => ({ userId: membership.publicUserData?.userId, role: membership.role })), req.params.userId, ownerRole);
+    if (removalError) return res.status(removalError === 'Organization member not found' ? 404 : 409).json({ error: removalError });
+    await clerkClient.organizations.deleteOrganizationMembership({ organizationId: client.clerkOrganizationId!, userId: req.params.userId });
+    await deactivateBackOfficeMembership(client.id, req.params.userId);
+    res.json({ removed: true });
+  } catch (error: any) { res.status(400).json({ error: platformSetupError(error) }); }
 });
 
 app.post('/api/organization/invitations', requireStrictAuth, requireTerminal, requireStaffSession, async (req: AuthRequest, res) => {

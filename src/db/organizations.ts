@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db, withTransaction } from './index.ts';
 import { locations, restaurants, staffSessions, terminals, users, webhookEvents } from './schema.ts';
 import type { BackOfficeRole } from '../types.ts';
@@ -16,6 +16,10 @@ export async function getRestaurantByClerkOrgId(clerkOrganizationId: string) {
   return (await db.select().from(restaurants).where(eq(restaurants.clerkOrganizationId, clerkOrganizationId)).limit(1))[0] ?? null;
 }
 
+export async function getRestaurantById(id: number) {
+  return (await db.select().from(restaurants).where(eq(restaurants.id, id)).limit(1))[0] ?? null;
+}
+
 export async function getRestaurantWithDefaultLocation(clerkOrganizationId: string) {
   const restaurant = await getRestaurantByClerkOrgId(clerkOrganizationId);
   if (!restaurant) return null;
@@ -29,6 +33,19 @@ export async function listRestaurantClients() {
 
 export async function updateRestaurantStatus(restaurantId: number, status: 'active' | 'suspended') {
   return (await db.update(restaurants).set({ status }).where(eq(restaurants.id, restaurantId)).returning())[0] ?? null;
+}
+
+export async function deactivateBackOfficeMembership(restaurantId: number, clerkUserId: string) {
+  return withTransaction(async transaction => {
+    const affected = await transaction.update(users).set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(users.restaurantId, restaurantId), eq(users.clerkUserId, clerkUserId)))
+      .returning({ id: users.id });
+    for (const staff of affected) {
+      await transaction.update(staffSessions).set({ revokedAt: new Date() })
+        .where(and(eq(staffSessions.staffId, staff.id), isNull(staffSessions.revokedAt)));
+    }
+    return affected.length;
+  });
 }
 
 export async function getRestaurantSettings(restaurantId: number, locationId: number) {
