@@ -461,14 +461,14 @@ export function PosProvider({ children }: { children: ReactNode }) {
   const processPayment = async (orderId: number, amount: number, method: string, tipAmount = 0, tenderedAmount?: number, idempotencyKey = crypto.randomUUID()): Promise<Order | null> => {
     setIsSubmitting(true);
     try {
-      const res = await fetch(`/api/orders/${orderId}/pay`, {
+      const provider = method === 'cash' ? 'cash' : method;
+      const res = await fetch('/api/payment-intents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          amount,
-          tip: tipAmount,
-          method,
-          processedBy: 'Terminal Staff',
+          orderId,
+          amount: amount + tipAmount,
+          provider,
           tenderedAmount,
           idempotencyKey,
         }),
@@ -477,7 +477,8 @@ export function PosProvider({ children }: { children: ReactNode }) {
         const errorData = await res.json().catch(() => ({ error: 'Payment processing failed' }));
         throw new Error(errorData.error || 'Payment processing failed');
       }
-      const updatedOrder = await res.json();
+      const paymentResult = await res.json();
+      const updatedOrder = paymentResult.order as Order;
       setCheckoutOrder(updatedOrder);
       playSuccessChime();
       showToast(`Payment of ${formatCurrency(amount)} processed successfully!`);

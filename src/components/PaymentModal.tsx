@@ -29,7 +29,7 @@ export default function PaymentModal() {
     isSubmitting,
   } = usePos();
 
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [cashTendered, setCashTendered] = useState<number>(0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [paymentSuccess, setPaymentSuccess] = useState<boolean>(false);
@@ -135,10 +135,11 @@ export default function PaymentModal() {
               {/* Payment Methods Grid */}
               <div className="grid grid-cols-4 gap-2">
                 {[
-                  { id: 'card', label: 'Credit Card', icon: CreditCard },
                   { id: 'cash', label: 'Cash', icon: Banknote },
-                  { id: 'digital', label: 'Apple/Google', icon: Smartphone },
                   { id: 'split', label: 'Split Bill', icon: Users },
+                  { id: 'mtn_momo_uganda', label: 'MTN MoMo · Soon', icon: Smartphone, disabled: true },
+                  { id: 'airtel_money_uganda', label: 'Airtel · Soon', icon: Smartphone, disabled: true },
+                  { id: 'card', label: 'Card · Soon', icon: CreditCard, disabled: true },
                 ].map((m) => {
                   const Icon = m.icon;
                   const isSelected = paymentMethod === m.id;
@@ -146,6 +147,7 @@ export default function PaymentModal() {
                     <button
                       key={m.id}
                       type="button"
+                      disabled={m.disabled}
                       onClick={() => {
                         if (m.id === 'split') {
                           setSplitBillModalOpen(true);
@@ -156,7 +158,7 @@ export default function PaymentModal() {
                       className={`p-3 rounded-xl border flex flex-col items-center justify-center text-xs font-bold transition cursor-pointer ${
                         isSelected
                           ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-2xs'
+                          : m.disabled ? 'cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400 opacity-70' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-2xs'
                       }`}
                     >
                       <Icon className="w-5 h-5 mb-1" />
@@ -271,7 +273,7 @@ export default function PaymentModal() {
               }`}
             >
               {isProcessing ? (
-                <span>Authorizing Card...</span>
+                <span>Recording payment...</span>
               ) : (
                 <>
                   <span>Charge {formatCurrency(orderTotal)}</span>

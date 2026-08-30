@@ -99,6 +99,13 @@
       "when": 1788060792448,
       "tag": "0013_flat_peter_parker",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788086424852,
+      "tag": "0014_new_white_tiger",
+      "breakpoints": true
     }
   ]
 }

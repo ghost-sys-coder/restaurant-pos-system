@@ -310,6 +310,77 @@ export const payments = pgTable('payments', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+export const merchantAccounts = pgTable('merchant_accounts', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  provider: text('provider').notNull(),
+  environment: text('environment').default('sandbox').notNull(),
+  status: text('status').default('disabled').notNull(),
+  encryptedCredentials: text('encrypted_credentials'),
+  capabilities: jsonb('capabilities').$type<string[]>().default([]).notNull(),
+  lastVerifiedAt: timestamp('last_verified_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, table => [uniqueIndex('merchant_accounts_location_provider_unique').on(table.locationId, table.provider)]);
+
+export const paymentIntents = pgTable('payment_intents', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  orderId: integer('order_id').references(() => orders.id).notNull(),
+  merchantAccountId: integer('merchant_account_id').references(() => merchantAccounts.id),
+  provider: text('provider').notNull(),
+  method: text('method').notNull(),
+  amount: integer('amount').notNull(),
+  currency: text('currency').notNull(),
+  status: text('status').default('created').notNull(),
+  idempotencyKey: text('idempotency_key').notNull().unique(),
+  externalReference: text('external_reference'),
+  customerPhoneHash: text('customer_phone_hash'),
+  customerPhoneMasked: text('customer_phone_masked'),
+  lastError: text('last_error'),
+  expiresAt: timestamp('expires_at'),
+  createdByStaffId: integer('created_by_staff_id').references(() => users.id),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, table => [index('payment_intents_order_status_idx').on(table.orderId, table.status), uniqueIndex('payment_intents_provider_reference_unique').on(table.provider, table.externalReference)]);
+
+export const paymentAttempts = pgTable('payment_attempts', {
+  id: serial('id').primaryKey(),
+  paymentIntentId: integer('payment_intent_id').references(() => paymentIntents.id).notNull(),
+  attemptNumber: integer('attempt_number').notNull(),
+  status: text('status').notNull(),
+  sanitizedResponse: jsonb('sanitized_response').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, table => [uniqueIndex('payment_attempts_intent_number_unique').on(table.paymentIntentId, table.attemptNumber)]);
+
+export const paymentEvents = pgTable('payment_events', {
+  id: serial('id').primaryKey(),
+  paymentIntentId: integer('payment_intent_id').references(() => paymentIntents.id).notNull(),
+  provider: text('provider').notNull(),
+  providerEventId: text('provider_event_id').notNull(),
+  eventType: text('event_type').notNull(),
+  verified: boolean('verified').default(false).notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, table => [uniqueIndex('payment_events_provider_event_unique').on(table.provider, table.providerEventId)]);
+
+export const ledgerEntries = pgTable('ledger_entries', {
+  id: serial('id').primaryKey(),
+  restaurantId: integer('restaurant_id').references(() => restaurants.id).notNull(),
+  locationId: integer('location_id').references(() => locations.id).notNull(),
+  orderId: integer('order_id').references(() => orders.id),
+  paymentIntentId: integer('payment_intent_id').references(() => paymentIntents.id),
+  entryType: text('entry_type').notNull(),
+  amount: integer('amount').notNull(),
+  currency: text('currency').notNull(),
+  idempotencyKey: text('idempotency_key').notNull().unique(),
+  actorStaffId: integer('actor_staff_id').references(() => users.id),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, table => [index('ledger_entries_location_created_idx').on(table.locationId, table.createdAt)]);
+
 // Relations
 export const categoriesRelations = relations(categories, ({ many }) => ({
   menuItems: many(menuItems),

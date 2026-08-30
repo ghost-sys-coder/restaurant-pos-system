@@ -23,7 +23,6 @@ import {
   replaceOrder,
   updateOrderStatus,
   updateOrderItemStatus,
-  processPayment,
   getAnalyticsSummary,
 } from '../db/queries.ts';
 import { getAllUsers, getUserById, permanentlyDeleteUser, setUserActive, updateUserRole } from '../db/users.ts';
@@ -43,6 +42,8 @@ import { adjustInventory, createInventoryItem, listInventory, replaceMenuItemRec
 import { clampInteger } from '../domain/posRules.ts';
 import { APPROVAL_ACTIONS, consumeManagerApproval, createManagerApproval, type ApprovalAction } from '../db/approvals.ts';
 import { claimNextPrintJob, completePrintJob, createPrinterProfile, createTestPrintJob, listPrinterProfiles, listPrintJobs, retryPrintJob } from '../db/printing.ts';
+import { createPaymentIntent, getPaymentIntent, listAvailableMethods } from '../db/paymentOrchestration.ts';
+import type { PaymentProvider } from '../payments/types.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -946,25 +947,32 @@ app.patch('/api/orders/items/:id/status', requirePermission('kitchen.manage'), a
 app.post('/api/orders/:id/pay', requirePermission('payments.process'), async (req: AuthRequest, res) => {
   try {
     const id = Number(req.params.id);
-    const { amount, tip, method, transactionRef, idempotencyKey, tenderedAmount } = req.body;
-    const order = await processPayment(req.terminal!.restaurantId, req.terminal!.locationId, id, {
-      amount,
-      tip,
-      method,
-      processedBy: req.staff?.name || 'Cashier',
-      processedByStaffId: req.staff?.id,
-      transactionRef,
-      idempotencyKey: String(idempotencyKey || ''),
-      tenderedAmount,
-      terminalId: req.terminal!.id,
-    });
-    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'payment.recorded', entityType: 'order', entityId: String(id), metadata: { amount, method, idempotencyKey } });
-    res.json(order);
+    if (req.body.method !== 'cash') return res.status(409).json({ error: 'This payment method must use a configured payment adapter' });
+    const result = await createPaymentIntent({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, staffId: req.staff!.id, orderId: id, provider: 'cash', amount: Number(req.body.amount), idempotencyKey: String(req.body.idempotencyKey || ''), tenderedAmount: Number(req.body.tenderedAmount) });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: result.replayed ? 'payment.intent_replayed' : 'payment.intent_created', entityType: 'payment_intent', entityId: String(result.intent.id), metadata: { amount: result.intent.amount, provider: 'cash', status: result.intent.status } });
+    res.json(result.order);
   } catch (error: any) {
     console.error('Failed to process payment:', error);
     const message = error?.cause?.message || error?.message || 'Failed to process payment';
     res.status(500).json({ error: message });
   }
+});
+
+app.get('/api/payment-methods', requirePermission('payments.process'), async (req: AuthRequest, res) => {
+  const settings = await getRestaurantSettings(req.terminal!.restaurantId, req.terminal!.locationId);
+  res.json({ methods: await listAvailableMethods(settings?.restaurant.currency || 'UGX') });
+});
+
+app.post('/api/payment-intents', requirePermission('payments.process'), async (req: AuthRequest, res) => {
+  try {
+    const result = await createPaymentIntent({ restaurantId: req.terminal!.restaurantId, locationId: req.terminal!.locationId, terminalId: req.terminal!.id, staffId: req.staff!.id, orderId: Number(req.body.orderId), provider: String(req.body.provider) as PaymentProvider, amount: Number(req.body.amount), idempotencyKey: String(req.body.idempotencyKey || ''), tenderedAmount: req.body.tenderedAmount === undefined ? undefined : Number(req.body.tenderedAmount) });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: result.replayed ? 'payment.intent_replayed' : 'payment.intent_created', entityType: 'payment_intent', entityId: String(result.intent.id), metadata: { provider: result.intent.provider, amount: result.intent.amount, status: result.intent.status } });
+    res.status(result.replayed ? 200 : 201).json(result);
+  } catch (error: any) { const message = error?.cause?.message || error?.message || 'Unable to create payment intent'; res.status(/not found/.test(message) ? 404 : /not configured|not payable|exceeds|currency|tendered/.test(message) ? 409 : 400).json({ error: message }); }
+});
+
+app.get('/api/payment-intents/:id', requirePermission('payments.process'), async (req: AuthRequest, res) => {
+  const intent = await getPaymentIntent(req.terminal!.restaurantId, req.terminal!.locationId, Number(req.params.id)); if (!intent) return res.status(404).json({ error: 'Payment intent not found' }); res.json(intent);
 });
 
 // Analytics

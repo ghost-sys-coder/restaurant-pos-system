@@ -156,9 +156,9 @@ export default function SplitBillModal({
                   ) : (
                     <div className="flex items-center gap-1.5">
                       <button
-                        disabled={busyShare !== null}
-                        onClick={() => handlePayShare(idx, 'card')}
-                        className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 transition cursor-pointer border border-slate-200"
+                        disabled
+                        title="Card adapter is not configured"
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-400 opacity-60 text-xs font-semibold flex items-center gap-1 border border-slate-200 cursor-not-allowed"
                       >
                         <CreditCard className="w-3 h-3 text-indigo-600" />
                         <span>{busyShare === idx ? 'Saving…' : 'Card'}</span>

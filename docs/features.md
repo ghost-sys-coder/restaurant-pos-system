@@ -41,6 +41,11 @@
 
 ### 5. Payments & Checkout
 
+- Checkout now enters through a provider-independent payment-intent adapter boundary.
+- Cash tenders post the intent, tender record, immutable ledger entry, order balance, table state, and receipt job transactionally.
+- Payment idempotency keys reserve the outstanding balance and safely replay instead of recording duplicate tenders.
+- MTN MoMo, Airtel Money, and card controls fail closed until their merchant adapters and verified callbacks are configured; the former simulated approval controls are unavailable.
+
 - **Multiple Payment Methods**: Credit Card, Cash, Digital Wallet (Apple/Google Pay), Split Bill
 - **Card Terminal Simulator** with EMV/contactless reader ready UI
 - **Cash Calculator** with fast tender buttons (Exact, $20, $50, $100) and change due display
