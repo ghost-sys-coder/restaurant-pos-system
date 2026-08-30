@@ -11,6 +11,7 @@ import { useAuth } from './context/AuthContext.tsx';
 import { StaffAccessScreen, TerminalSetupScreen } from './components/AccessScreens.tsx';
 import PlatformClientsScreen from './components/PlatformClientsScreen.tsx';
 import OrganizationRequiredScreen from './components/OrganizationRequiredScreen.tsx';
+import { authRouteForPath } from './auth/authRoutes.ts';
 
 function usePathname() {
   const [pathname, setPathname] = useState(window.location.pathname);
@@ -23,9 +24,10 @@ function usePathname() {
 }
 
 function AuthPage({ pathname }: { pathname: string }) {
-  const isInvitation = pathname === '/accept-invitation';
-  const isSignUp = pathname === '/sign-up';
-  const isSignIn = pathname === '/sign-in';
+  const authRoute = authRouteForPath(pathname);
+  const isInvitation = authRoute === 'invitation';
+  const isSignUp = authRoute === 'sign-up';
+  const isSignIn = authRoute === 'sign-in';
 
   if (isInvitation) {
     return (
@@ -41,10 +43,9 @@ function AuthPage({ pathname }: { pathname: string }) {
             </p>
           </div>
           <SignIn
-            routing="path"
-            path="/accept-invitation"
-            signUpUrl="/accept-invitation"
-            forceRedirectUrl="/"
+            routing="hash"
+            signUpUrl="/sign-up"
+            fallbackRedirectUrl="/"
             appearance={{
               variables: {
                 colorPrimary: '#4f46e5',
@@ -76,9 +77,9 @@ function AuthPage({ pathname }: { pathname: string }) {
     return (
       <main className="min-h-screen grid place-items-center bg-background p-6">
         {isSignUp ? (
-          <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" forceRedirectUrl="/" />
+          <SignUp routing="hash" signInUrl="/sign-in" fallbackRedirectUrl="/" />
         ) : (
-          <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" forceRedirectUrl="/" />
+          <SignIn routing="hash" signUpUrl="/sign-up" fallbackRedirectUrl="/" />
         )}
       </main>
     );

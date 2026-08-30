@@ -44,6 +44,7 @@ import { APPROVAL_ACTIONS, consumeManagerApproval, createManagerApproval, type A
 import { claimNextPrintJob, completePrintJob, createPrinterProfile, createTestPrintJob, listPrinterProfiles, listPrintJobs, retryPrintJob } from '../db/printing.ts';
 import { createPaymentIntent, getPaymentIntent, listAvailableMethods } from '../db/paymentOrchestration.ts';
 import type { PaymentProvider } from '../payments/types.ts';
+import { buildInvitationRedirectUrl } from '../auth/invitationRedirect.ts';
 
 export const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.VITE_CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
@@ -98,20 +99,11 @@ function platformSetupError(error: any): string {
 }
 
 function invitationRedirectUrl(req: express.Request): string {
-  const configured = String(process.env.APP_URL || '').trim();
-  if (configured) {
-    try {
-      const url = new URL(configured);
-      if (url.protocol === 'http:' || url.protocol === 'https:') return new URL('/accept-invitation', url).toString();
-    } catch {
-      throw new Error('APP_URL must be an absolute http:// or https:// URL');
-    }
-  }
   const forwardedProtocol = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
   const protocol = forwardedProtocol || req.protocol;
   const host = req.get('host');
   if (!host) throw new Error('Unable to determine the application URL');
-  return `${protocol}://${host}/accept-invitation`;
+  return buildInvitationRedirectUrl(process.env.APP_URL, `${protocol}://${host}`);
 }
 
 async function getOrCreateUserFromRequest(req: AuthRequest) {
