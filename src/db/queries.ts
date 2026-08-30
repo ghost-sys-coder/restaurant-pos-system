@@ -1,6 +1,6 @@
 import { desc, eq, and, sql, gte, isNull } from 'drizzle-orm';
 import { db, withTransaction } from './index.ts';
-import { calculateOrderTotals, canTransitionItem, canTransitionOrder, canTransitionTable, clampInteger, paymentState } from '../domain/posRules.ts';
+import { calculateOrderTotals, canTransitionItem, canTransitionOrder, canTransitionTable, clampInteger, normalizeCurrency, paymentState } from '../domain/posRules.ts';
 import {
   categories,
   menuItems,
@@ -234,15 +234,18 @@ export async function createOrder(data: {
         if (table[0].currentOrderId) throw new Error('This table already has an active order');
       }
       const priced = await priceOrderItems(tx, data.restaurantId, data.items);
-      const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
+      const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps, currency: restaurants.currency }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
       if (!settings) throw new Error('Restaurant settings not found');
       const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, settings.taxRateBps);
       const tip = clampInteger(data.tipAmount ?? 0, 0, 100_000_000);
+      const currency = normalizeCurrency(settings.currency);
+      const discountRateBps = clampInteger(data.discountPercent ?? 0, 0, 100) * 100;
       const created = (await tx.insert(orders).values({
         orderNumber: `PENDING-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         restaurantId: data.restaurantId, locationId: data.locationId, orderType: data.orderType,
         tableId: data.tableId || null, serverName: data.serverName || 'Staff Member', createdByStaffId: data.createdByStaffId,
         customerName: data.customerName || null, customerPhone: data.customerPhone || null, status: 'active',
+        currency, taxRateBps: settings.taxRateBps, discountRateBps,
         ...totals, tip, total: totals.total + tip, paymentStatus: 'unpaid',
         notes: data.notes || null, guestCount: data.guestCount || 1,
       }).returning())[0];
@@ -301,12 +304,12 @@ export async function replaceOrder(data: Parameters<typeof createOrder>[0] & { o
       if (nextTable.currentOrderId && nextTable.currentOrderId !== current.id) throw new Error('This table already has an active order');
     }
     const priced = await priceOrderItems(tx, data.restaurantId, data.items);
-    const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
-    const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, settings?.taxRateBps ?? 0);
+    const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, current.taxRateBps);
     const tip = clampInteger(data.tipAmount ?? 0, 0, 100_000_000);
+    const discountRateBps = clampInteger(data.discountPercent ?? 0, 0, 100) * 100;
     await tx.delete(orderItems).where(eq(orderItems.orderId, current.id));
     await tx.insert(orderItems).values(priced.map((item: any) => ({ ...item, orderId: current.id, itemStatus: 'sent' })));
-    const changed = await tx.update(orders).set({ orderType: data.orderType, tableId: data.tableId || null, customerName: data.customerName || null, customerPhone: data.customerPhone || null, notes: data.notes || null, guestCount: data.guestCount || 1, ...totals, tip, total: totals.total + tip, version: current.version + 1 }).where(and(eq(orders.id, current.id), eq(orders.version, data.expectedVersion))).returning({ id: orders.id });
+    const changed = await tx.update(orders).set({ orderType: data.orderType, tableId: data.tableId || null, customerName: data.customerName || null, customerPhone: data.customerPhone || null, notes: data.notes || null, guestCount: data.guestCount || 1, discountRateBps, ...totals, tip, total: totals.total + tip, version: current.version + 1 }).where(and(eq(orders.id, current.id), eq(orders.version, data.expectedVersion))).returning({ id: orders.id });
     if (!changed[0]) throw new Error('ORDER_CONFLICT');
     if (current.tableId && current.tableId !== data.tableId) await tx.update(restaurantTables).set({ status: 'available', currentOrderId: null }).where(and(eq(restaurantTables.id, current.tableId), eq(restaurantTables.locationId, data.locationId)));
     if (data.tableId) await tx.update(restaurantTables).set({ status: 'occupied', currentOrderId: current.id }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));

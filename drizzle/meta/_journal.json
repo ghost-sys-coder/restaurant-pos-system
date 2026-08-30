@@ -43,6 +43,13 @@
       "when": 1788031631718,
       "tag": "0005_spotty_giant_man",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788054368523,
+      "tag": "0006_blushing_dragon_man",
+      "breakpoints": true
     }
   ]
 }

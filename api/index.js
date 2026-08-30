@@ -145,7 +145,7 @@ var menuItems = pgTable("menu_items", {
   name: text("name").notNull(),
   description: text("description"),
   price: integer("price").notNull(),
-  // in cents (e.g. 1499 = $14.99)
+  // integer minor units; whole shillings for UGX
   imageUrl: text("image_url"),
   imagePublicId: text("image_public_id"),
   isAvailable: boolean("is_available").default(true),
@@ -185,6 +185,9 @@ var orders = pgTable("orders", {
   customerPhone: text("customer_phone"),
   status: text("status").default("active"),
   // pending, active, preparing, ready, served, completed, cancelled
+  currency: text("currency").default("UGX").notNull(),
+  taxRateBps: integer("tax_rate_bps").default(0).notNull(),
+  discountRateBps: integer("discount_rate_bps").default(0).notNull(),
   subtotal: integer("subtotal").default(0).notNull(),
   tax: integer("tax").default(0).notNull(),
   discount: integer("discount").default(0).notNull(),
@@ -284,6 +287,11 @@ async function withTransaction(work) {
 function clampInteger(value, minimum, maximum) {
   if (!Number.isFinite(value)) throw new Error("A numeric value is required");
   return Math.min(maximum, Math.max(minimum, Math.round(value)));
+}
+function normalizeCurrency(value) {
+  const currency = String(value || "").trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw new Error("Currency must be a three-letter ISO code");
+  return currency;
 }
 function calculateOrderTotals(lines, discountPercent, taxRateBps) {
   const normalizedDiscount = clampInteger(discountPercent, 0, 100);
@@ -477,10 +485,12 @@ async function createOrder(data) {
         if (table[0].currentOrderId) throw new Error("This table already has an active order");
       }
       const priced = await priceOrderItems(tx, data.restaurantId, data.items);
-      const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
+      const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps, currency: restaurants.currency }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
       if (!settings) throw new Error("Restaurant settings not found");
       const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, settings.taxRateBps);
       const tip = clampInteger(data.tipAmount ?? 0, 0, 1e8);
+      const currency = normalizeCurrency(settings.currency);
+      const discountRateBps = clampInteger(data.discountPercent ?? 0, 0, 100) * 100;
       const created = (await tx.insert(orders).values({
         orderNumber: `PENDING-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         restaurantId: data.restaurantId,
@@ -492,6 +502,9 @@ async function createOrder(data) {
         customerName: data.customerName || null,
         customerPhone: data.customerPhone || null,
         status: "active",
+        currency,
+        taxRateBps: settings.taxRateBps,
+        discountRateBps,
         ...totals,
         tip,
         total: totals.total + tip,
@@ -555,12 +568,12 @@ async function replaceOrder(data) {
       if (nextTable.currentOrderId && nextTable.currentOrderId !== current.id) throw new Error("This table already has an active order");
     }
     const priced = await priceOrderItems(tx, data.restaurantId, data.items);
-    const settings = (await tx.select({ taxRateBps: restaurants.taxRateBps }).from(restaurants).where(eq(restaurants.id, data.restaurantId)).limit(1))[0];
-    const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, settings?.taxRateBps ?? 0);
+    const totals = calculateOrderTotals(priced, data.discountPercent ?? 0, current.taxRateBps);
     const tip = clampInteger(data.tipAmount ?? 0, 0, 1e8);
+    const discountRateBps = clampInteger(data.discountPercent ?? 0, 0, 100) * 100;
     await tx.delete(orderItems).where(eq(orderItems.orderId, current.id));
     await tx.insert(orderItems).values(priced.map((item) => ({ ...item, orderId: current.id, itemStatus: "sent" })));
-    const changed = await tx.update(orders).set({ orderType: data.orderType, tableId: data.tableId || null, customerName: data.customerName || null, customerPhone: data.customerPhone || null, notes: data.notes || null, guestCount: data.guestCount || 1, ...totals, tip, total: totals.total + tip, version: current.version + 1 }).where(and(eq(orders.id, current.id), eq(orders.version, data.expectedVersion))).returning({ id: orders.id });
+    const changed = await tx.update(orders).set({ orderType: data.orderType, tableId: data.tableId || null, customerName: data.customerName || null, customerPhone: data.customerPhone || null, notes: data.notes || null, guestCount: data.guestCount || 1, discountRateBps, ...totals, tip, total: totals.total + tip, version: current.version + 1 }).where(and(eq(orders.id, current.id), eq(orders.version, data.expectedVersion))).returning({ id: orders.id });
     if (!changed[0]) throw new Error("ORDER_CONFLICT");
     if (current.tableId && current.tableId !== data.tableId) await tx.update(restaurantTables).set({ status: "available", currentOrderId: null }).where(and(eq(restaurantTables.id, current.tableId), eq(restaurantTables.locationId, data.locationId)));
     if (data.tableId) await tx.update(restaurantTables).set({ status: "occupied", currentOrderId: current.id }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));

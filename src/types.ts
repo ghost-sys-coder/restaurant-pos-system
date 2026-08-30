@@ -104,11 +104,14 @@ export interface Order {
   customerName: string | null;
   customerPhone: string | null;
   status: OrderStatus;
-  subtotal: number; // cents
-  tax: number; // cents
-  discount: number; // cents
-  tip: number; // cents
-  total: number; // cents
+  currency: string;
+  taxRateBps: number;
+  discountRateBps: number;
+  subtotal: number; // integer minor units; whole shillings for UGX
+  tax: number;
+  discount: number;
+  tip: number;
+  total: number;
   paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod | null;
   notes: string | null;

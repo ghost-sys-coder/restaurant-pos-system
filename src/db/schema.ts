@@ -113,7 +113,7 @@ export const menuItems = pgTable('menu_items', {
   categoryId: integer('category_id').references(() => categories.id),
   name: text('name').notNull(),
   description: text('description'),
-  price: integer('price').notNull(), // in cents (e.g. 1499 = $14.99)
+  price: integer('price').notNull(), // integer minor units; whole shillings for UGX
   imageUrl: text('image_url'),
   imagePublicId: text('image_public_id'),
   isAvailable: boolean('is_available').default(true),
@@ -152,6 +152,9 @@ export const orders = pgTable('orders', {
   customerName: text('customer_name'),
   customerPhone: text('customer_phone'),
   status: text('status').default('active'), // pending, active, preparing, ready, served, completed, cancelled
+  currency: text('currency').default('UGX').notNull(),
+  taxRateBps: integer('tax_rate_bps').default(0).notNull(),
+  discountRateBps: integer('discount_rate_bps').default(0).notNull(),
   subtotal: integer('subtotal').default(0).notNull(),
   tax: integer('tax').default(0).notNull(),
   discount: integer('discount').default(0).notNull(),

@@ -5,6 +5,12 @@ export function clampInteger(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, Math.round(value)));
 }
 
+export function normalizeCurrency(value: string) {
+  const currency = String(value || '').trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) throw new Error('Currency must be a three-letter ISO code');
+  return currency;
+}
+
 export function calculateOrderTotals(lines: PricedLine[], discountPercent: number, taxRateBps: number) {
   const normalizedDiscount = clampInteger(discountPercent, 0, 100);
   const normalizedTax = clampInteger(taxRateBps, 0, 10_000);
