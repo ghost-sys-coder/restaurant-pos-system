@@ -215,6 +215,10 @@ export const restaurantTables = pgTable('restaurant_tables', {
   section: text('section').default('Main Dining'), // Main Dining, Patio, Bar, VIP
   status: text('status').default('available'), // available, occupied, reserved, cleaning, billing
   currentOrderId: integer('current_order_id'),
+  reservationName: text('reservation_name'),
+  reservationPhone: text('reservation_phone'),
+  reservationAt: timestamp('reservation_at'),
+  reservationNotes: text('reservation_notes'),
   posX: integer('pos_x').default(0),
   posY: integer('pos_y').default(0),
   createdAt: timestamp('created_at').defaultNow(),

@@ -167,6 +167,24 @@ export async function updateTableDetails(locationId: number, id: number, data: {
   }
 }
 
+export async function reserveTable(locationId: number, id: number, data: { name: string; phone?: string | null; reservationAt: Date; notes?: string | null }) {
+  return withTransaction(async tx => {
+    const table = (await tx.select().from(restaurantTables).where(and(eq(restaurantTables.id, id), eq(restaurantTables.locationId, locationId))).limit(1))[0];
+    if (!table) return null;
+    if (table.currentOrderId || table.status !== 'available') throw new Error('Only an available table can be reserved');
+    return (await tx.update(restaurantTables).set({ status: 'reserved', reservationName: data.name, reservationPhone: data.phone || null, reservationAt: data.reservationAt, reservationNotes: data.notes || null }).where(eq(restaurantTables.id, id)).returning())[0];
+  });
+}
+
+export async function cancelTableReservation(locationId: number, id: number) {
+  return withTransaction(async tx => {
+    const table = (await tx.select().from(restaurantTables).where(and(eq(restaurantTables.id, id), eq(restaurantTables.locationId, locationId))).limit(1))[0];
+    if (!table) return null;
+    if (table.status !== 'reserved' || table.currentOrderId) throw new Error('This table does not have a cancellable reservation');
+    return (await tx.update(restaurantTables).set({ status: 'available', reservationName: null, reservationPhone: null, reservationAt: null, reservationNotes: null }).where(eq(restaurantTables.id, id)).returning())[0];
+  });
+}
+
 export async function transferOrderTable(restaurantId: number, locationId: number, orderId: number, targetTableId: number) {
   return withTransaction(async tx => {
     const order = (await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).limit(1))[0];
@@ -178,7 +196,7 @@ export async function transferOrderTable(restaurantId: number, locationId: numbe
     if (!target) throw new Error('Destination table not found');
     if (target.currentOrderId || !['available', 'reserved'].includes(target.status || '')) throw new Error('Destination table is not available');
     await tx.update(restaurantTables).set({ status: 'available', currentOrderId: null }).where(and(eq(restaurantTables.id, order.tableId), eq(restaurantTables.locationId, locationId), eq(restaurantTables.currentOrderId, order.id)));
-    await tx.update(restaurantTables).set({ status: 'occupied', currentOrderId: order.id }).where(and(eq(restaurantTables.id, targetTableId), eq(restaurantTables.locationId, locationId)));
+    await tx.update(restaurantTables).set({ status: 'occupied', currentOrderId: order.id, reservationName: null, reservationPhone: null, reservationAt: null, reservationNotes: null }).where(and(eq(restaurantTables.id, targetTableId), eq(restaurantTables.locationId, locationId)));
     return (await tx.update(orders).set({ tableId: targetTableId, version: sql`${orders.version} + 1` }).where(and(eq(orders.id, order.id), eq(orders.restaurantId, restaurantId), eq(orders.locationId, locationId))).returning())[0];
   });
 }
@@ -275,7 +293,7 @@ export async function createOrder(data: {
       await tx.update(orders).set({ orderNumber }).where(eq(orders.id, created.id));
       await tx.insert(orderItems).values(priced.map((item: any) => ({ ...item, orderId: created.id, itemStatus: 'sent' })));
       await enqueuePrintJobs(tx, { restaurantId: data.restaurantId, locationId: data.locationId, terminalId: data.terminalId, orderId: created.id, jobType: 'kitchen', eventKey: `order:${created.id}:created`, stations: Array.from(new Set(priced.map((item: any) => item.kitchenStation))), payload: { orderId: created.id, orderNumber, orderType: data.orderType, tableId: data.tableId || null, serverName: data.serverName, notes: data.notes || null, items: priced } });
-      if (data.tableId) await tx.update(restaurantTables).set({ status: 'occupied', currentOrderId: created.id }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));
+      if (data.tableId) await tx.update(restaurantTables).set({ status: 'occupied', currentOrderId: created.id, reservationName: null, reservationPhone: null, reservationAt: null, reservationNotes: null }).where(and(eq(restaurantTables.id, data.tableId), eq(restaurantTables.locationId, data.locationId)));
       return created.id;
     });
     return await getOrderById(data.restaurantId, data.locationId, orderId);

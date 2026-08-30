@@ -69,6 +69,10 @@ export interface RestaurantTable {
   section: string;
   status: TableStatus;
   currentOrderId: number | null;
+  reservationName?: string | null;
+  reservationPhone?: string | null;
+  reservationAt?: string | null;
+  reservationNotes?: string | null;
   posX: number;
   posY: number;
   createdAt?: string;

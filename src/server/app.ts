@@ -15,6 +15,8 @@ import {
   updateTableStatus,
   updateTableDetails,
   transferOrderTable,
+  reserveTable,
+  cancelTableReservation,
   getOrders,
   getOrderById,
   createOrder,
@@ -822,6 +824,21 @@ app.post('/api/orders/:id/transfer-table', requirePermission('orders.write'), as
     const message = error?.cause?.message || error?.message || 'Unable to transfer table';
     res.status(message.includes('not found') ? 404 : 409).json({ error: message });
   }
+});
+
+app.post('/api/tables/:id/reservation', requirePermission('tables.manage'), async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id); const name = String(req.body.name || '').trim(); const reservationAt = new Date(req.body.reservationAt);
+    if (!Number.isInteger(id) || name.length < 2 || name.length > 100 || Number.isNaN(reservationAt.getTime()) || reservationAt.getTime() < Date.now() - 60_000) return res.status(400).json({ error: 'Guest name and a valid future reservation time are required' });
+    const table = await reserveTable(req.terminal!.locationId, id, { name, phone: String(req.body.phone || '').trim().slice(0, 30) || null, reservationAt, notes: String(req.body.notes || '').trim().slice(0, 500) || null });
+    if (!table) return res.status(404).json({ error: 'Table not found' });
+    await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'table.reserved', entityType: 'table', entityId: String(id), metadata: { reservationAt: reservationAt.toISOString() } }); res.json(table);
+  } catch (error: any) { const message = error?.message || 'Unable to reserve table'; res.status(message.includes('available') ? 409 : 400).json({ error: message }); }
+});
+
+app.delete('/api/tables/:id/reservation', requirePermission('tables.manage'), async (req: AuthRequest, res) => {
+  try { const id = Number(req.params.id); const table = await cancelTableReservation(req.terminal!.locationId, id); if (!table) return res.status(404).json({ error: 'Table not found' }); await writeAudit({ terminal: req.terminal!, actorStaffId: req.staff!.id, action: 'table.reservation_cancelled', entityType: 'table', entityId: String(id) }); res.json(table); }
+  catch (error: any) { res.status(409).json({ error: error?.message || 'Unable to cancel reservation' }); }
 });
 
 // Orders
