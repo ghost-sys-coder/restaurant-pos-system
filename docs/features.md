@@ -23,6 +23,9 @@
 
 ### 3. Kitchen Display System (KDS)
 
+- Sent or preparing items can be voided through a reason-required in-app dialog and the one-time manager approval workflow.
+- Voided items remain in financial history and produce an audit event instead of being deleted.
+
 - **Live Order Queue** with real-time filtering (All Active, New, Cooking, Ready)
 - **Item-level Status Tracking**: Sent → Preparing → Ready → Served/Void
 - **Elapsed Timer** per ticket with visual urgency states (normal, warning at 10m, urgent at 20m)
